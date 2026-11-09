@@ -2,7 +2,7 @@
 #
 # vcal wrote this file because none existed. Every setting below is the
 # built-in default; delete a line to fall back to it. Under Home-Manager this
-# file is generated from `programs.vim-calendar.settings` instead.
+# file is generated from `programs.vcal.settings` instead.
 #
 # Changes apply to a running vcal within a second (except database_path).
 # Check a file without starting the TUI:  vcal config check
