@@ -45,7 +45,14 @@ impl Db {
         }
         let conn =
             Connection::open(path).with_context(|| format!("can't open {}", path.display()))?;
-        Self::setup(conn, Some(path.to_path_buf()))
+        let db = Self::setup(conn, Some(path.to_path_buf()))?;
+        // Watchers (Quickshell) can only follow a file that exists; create it
+        // without content so the first real write still reads as a change.
+        let sentinel = sentinel_path(path);
+        if !sentinel.exists() {
+            let _ = std::fs::write(&sentinel, "");
+        }
+        Ok(db)
     }
 
     pub fn open_in_memory() -> Result<Self> {

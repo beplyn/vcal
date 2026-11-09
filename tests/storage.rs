@@ -300,7 +300,15 @@ fn writes_touch_the_sentinel() {
     let mut db = Db::open(&path).unwrap();
     let sentinel = db::sentinel_path(&path);
     assert_eq!(sentinel.file_name().unwrap(), "events.db.changed");
-    assert!(!sentinel.exists(), "opening alone isn't a change");
+    // opening creates it empty, so watchers have something to follow
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "");
+    drop(db);
+    let mut db = Db::open(&path).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "",
+        "re-opening isn't a change"
+    );
     db.insert(timed("x", at(BERLIN, 2026, 11, 10, 9), 1))
         .unwrap();
     let first = std::fs::read_to_string(&sentinel).unwrap();

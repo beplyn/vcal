@@ -87,6 +87,8 @@
         '';
       });
 
+      homeManagerModules.default = import ./nix/hm-module.nix self;
+
       devShells = forAllSystems (pkgs:
       {
         default = pkgs.mkShell
