@@ -1,0 +1,76 @@
+# The TUI
+
+```sh
+vcal                              # month view, today
+vcal --view week --date tomorrow  # any <when> from cli.md
+```
+
+Three views (Month, Week, Day), a command line, and these modes:
+
+| Mode | Enter with | Leave with |
+|---|---|---|
+| Normal | (start) | |
+| Visual: select days (month) or a time range (week/day) | `v` | `Esc`, `v` |
+| Insert: the event dialog | `o`, `O`, `cc` | `Enter` saves, `Esc` discards |
+| Command | `:` | `Enter`, `Esc` |
+| Search: live filter on title, category, notes, location | `/` | `Enter` keeps the filter, `Esc` clears it |
+
+Every key below can be rebound; see
+[configuration.md](configuration.md#key-bindings). `?` shows the bindings
+currently in effect.
+
+## Normal mode
+
+| Keys | Action |
+|---|---|
+| `h` `j` `k` `l` / arrows | Move a day; `j`/`k` move a week in month view, a time slot in week/day |
+| `w` `b` | Forward / back a week |
+| `}` `{` | Forward / back a month |
+| `0` `$` | Start / end of the week |
+| `gg` `G` | First / last day of the month (week view: week; day view: first/last slot) |
+| `t` `.` | Today, at the current hour |
+| `Tab` `S-Tab`, `1` `2` `3` | Next / previous view; Month, Week, Day |
+| `Enter` | Focus the day's event list (`j`/`k` pick one); `Enter` again edits it |
+| `o` / `O` | New event at the cursor / new all-day event |
+| `dd` | Delete (asks to confirm; for a repeating event, asks: this occurrence or all) |
+| `cc` | Edit (same choice for repeating events) |
+| `yy` / `p` | Copy the event / paste a copy at the cursor |
+| `/`, `n` `N` | Search; next / previous match (up to a year away) |
+| `:` | Command line |
+| `?` | All key bindings |
+| `Esc` `C-[` `C-c` | Back out: list focus, selection, filter |
+| `ZZ` | Quit |
+
+There are no counts (`3j`), because `0`–`3` are taken by other actions.
+
+## Visual mode
+
+Movement keys work as in Normal mode. `d`/`x` deletes the selected events,
+`y` copies them, `>` / `<` moves them a day (month view) or a slot (week/day
+view), and `o` creates an event spanning the selection.
+
+## Commands
+
+| Command | |
+|---|---|
+| `:q` `:wq` `:x` | Quit. Everything is saved as you go, so `:w` is a no-op |
+| `:jump <when>`, or just `:2026-12-24` | Go to a date |
+| `:today` | Go to today |
+| `:view month\|week\|day` | Switch view |
+| `:import <file.ics>` | Import an iCalendar file |
+| `:noh` | Clear the search filter |
+| `:reload` | Re-read events and config |
+
+## The event dialog
+
+Start and end take anything `<when>` accepts (see [cli.md](cli.md#dates-and-times)),
+e.g. `tomorrow 9:00`. End also takes a length such as `45m`, and when left
+empty uses the default length. For all-day events the end is the last day,
+inclusive. `Repeat` is an RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=MO,WE`.
+Use `Tab`/`S-Tab` to move between fields and `Space` to toggle all day.
+
+## Shared with other programs
+
+The TUI notices writes from the CLI and from desktop widgets within a
+second and redraws, so there's no need to restart it. See
+[desktop.md](desktop.md).
