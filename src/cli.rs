@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::db::{self, Db};
 use crate::ics;
 use crate::model::{Event, Occurrence, Status};
+use crate::settings::{Settings, View};
 use crate::time::{self, DAY, When};
 
 #[derive(Parser)]
@@ -41,13 +42,6 @@ pub struct Cli {
 
     #[command(subcommand)]
     command: Option<Command>,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum View {
-    Month,
-    Week,
-    Day,
 }
 
 #[derive(Subcommand)]
@@ -141,8 +135,11 @@ fn run_with(cli: Cli) -> Result<()> {
     let db_path = cli.db.clone().unwrap_or_else(db::default_path);
     match cli.command {
         None => {
-            let _ = (cli.date, cli.view);
-            bail!("the TUI isn't built yet; use a subcommand (see `vcal --help`)")
+            let date = cli
+                .date
+                .map(|d| time::parse_when(&d, tz, time::now()).map(|w| w.date(tz)))
+                .transpose()?;
+            crate::tui::run(Db::open(&db_path)?, Settings::default(), date, cli.view)
         }
         Some(Command::Query(args)) => query(&Db::open(&db_path)?, args, tz),
         Some(Command::Add(args)) => add(&mut Db::open(&db_path)?, args, tz),

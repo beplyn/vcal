@@ -4,4 +4,6 @@ pub mod cli;
 pub mod db;
 pub mod ics;
 pub mod model;
+pub mod settings;
 pub mod time;
+pub mod tui;
