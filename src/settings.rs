@@ -1,5 +1,4 @@
-//! User preferences. Phase 3 fills these from config.toml; until then the
-//! defaults apply.
+//! User preferences: the `[general]` and `[views]` parts of config.toml.
 
 use chrono::{DateTime, Weekday};
 use chrono_tz::Tz;
@@ -30,7 +29,7 @@ impl View {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub week_start: Weekday,
     pub clock_24h: bool,

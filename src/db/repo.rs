@@ -129,6 +129,10 @@ fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> 
         ],
     )
     .with_context(|| format!("can't save event {}", ev.id))?;
+    if ev.rrule.is_none() {
+        // per-occurrence changes mean nothing once an event stops repeating
+        conn.execute("DELETE FROM event_exceptions WHERE event_id = ?1", [&ev.id])?;
+    }
     note_span(conn, ev.duration())?;
     Ok(ev)
 }
@@ -392,7 +396,7 @@ impl Db {
         // Occurrences moved into the window from outside it.
         let mut moved = self.conn.prepare_cached(&format!(
             "SELECT {}, {} FROM event_exceptions x JOIN events e ON e.id = x.event_id
-             WHERE x.kind = 'modified' AND x.start_ts IS NOT NULL
+             WHERE x.kind = 'modified' AND x.start_ts IS NOT NULL AND e.rrule IS NOT NULL
                AND x.start_ts >= :lo - :span AND x.start_ts < :hi",
             EVENT_COLS
                 .split(", ")

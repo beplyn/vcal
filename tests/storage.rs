@@ -372,3 +372,21 @@ SUMMARY:no parent\nEND:VEVENT\nEND:VCALENDAR\n";
     assert!(day_titles(&db, date(2026, 10, 26), BERLIN).is_empty());
     assert_eq!(day_titles(&db, date(2026, 11, 2), BERLIN), ["Weekly"]);
 }
+
+#[test]
+fn dropping_the_rule_drops_exceptions() {
+    let mut db = Db::open_in_memory().unwrap();
+    let mut ev = timed("standup", at(BERLIN, 2026, 11, 9, 9), 1);
+    ev.rrule = Some("FREQ=DAILY".into());
+    let ev = db.insert(ev).unwrap();
+    let mut moved = Exception::modified(&ev.id, at(BERLIN, 2026, 11, 10, 9));
+    moved.start = Some(at(BERLIN, 2026, 11, 12, 15));
+    db.set_exception(moved).unwrap();
+
+    let mut single = ev.clone();
+    single.rrule = None;
+    db.update(single).unwrap();
+    assert!(db.exceptions(&ev.id).unwrap().is_empty());
+    assert!(day_titles(&db, date(2026, 11, 12), BERLIN).is_empty());
+    assert_eq!(day_titles(&db, date(2026, 11, 9), BERLIN), ["standup"]);
+}

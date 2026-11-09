@@ -13,21 +13,43 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
+use std::path::PathBuf;
+
+use crate::config::Config;
 use crate::db::Db;
-use crate::settings::{Settings, View};
+use crate::settings::View;
 use crate::time;
 
 pub use app::App;
 
+/// Command-line choices for how the TUI starts.
+#[derive(Debug, Default)]
+pub struct Launch {
+    pub date: Option<NaiveDate>,
+    pub view: Option<View>,
+    /// Followed for live reloads.
+    pub config_path: Option<PathBuf>,
+    /// Shown on the message line at startup.
+    pub note: Option<String>,
+}
+
 /// Runs the TUI until the user quits.
-pub fn run(db: Db, settings: Settings, date: Option<NaiveDate>, view: Option<View>) -> Result<()> {
+pub fn run(db: Db, cfg: Config, launch: Launch) -> Result<()> {
     let tz = time::local_tz();
-    let mut app = App::new(db, tz, settings, time::now());
-    if let Some(v) = view {
+    let database_path = cfg.database_path.clone();
+    let mut app = App::new(db, tz, cfg.settings.clone(), time::now());
+    app.apply_config(cfg);
+    if let Some(path) = launch.config_path {
+        app.watch_config(path, database_path);
+    }
+    if let Some(v) = launch.view {
         app.view = v;
     }
-    if let Some(d) = date {
+    if let Some(d) = launch.date {
         app.goto_date(d);
+    }
+    if let Some(note) = launch.note {
+        app.info(note);
     }
     app.refresh();
 

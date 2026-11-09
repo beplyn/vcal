@@ -1,0 +1,133 @@
+# vcal configuration
+#
+# vcal wrote this file because none existed. Every setting below is the
+# built-in default; delete a line to fall back to it. Under Home-Manager this
+# file is generated from `programs.vim-calendar.settings` instead.
+#
+# Changes apply to a running vcal within a second (except database_path).
+# Check a file without starting the TUI:  vcal config check
+
+[general]
+# First column of the month and week grids: any weekday name.
+week_start = "monday"
+
+# "24h" (14:30) or "12h" (2:30pm).
+clock = "24h"
+
+# Length of new timed events: "45m", "1h", "1h30m" (a bare number is minutes).
+default_duration = "1h"
+
+# Where events live. Absolute, or starting with "~/". $VCAL_DB and --db
+# take precedence. Default: $XDG_DATA_HOME/calendar/events.db
+# database_path = "~/.local/share/calendar/events.db"
+
+[views]
+# View on startup: "month", "week" or "day".
+start = "month"
+
+# Week/day grid granularity in minutes: 15, 30 or 60.
+slot_minutes = 30
+
+# Hours the week/day grids cover, first inclusive, last exclusive (0-24).
+first_hour = 0
+last_hour = 24
+
+# Hour new events start at when created from the month view.
+new_event_hour = 9
+
+[theme]
+# Base16 palette, "#rrggbb". Under Home-Manager with Stylix these come from
+# the system scheme. Defaults: Base16 "Default Dark".
+base00 = "#181818" # background
+base01 = "#282828" # panels, status bar, dialogs
+base02 = "#383838" # cursor cell, visual selection
+base03 = "#585858" # borders, grid lines, days outside the month
+base04 = "#b8b8b8" # secondary text, time labels, past events
+base05 = "#d8d8d8" # text
+base06 = "#e8e8e8"
+base07 = "#f8f8f8"
+base08 = "#ab4642" # errors, cancelled events, delete prompts
+base09 = "#dc9656" # events starting within the hour
+base0A = "#f7ca88" # today, current-time line
+base0B = "#a1b56c" # events, success messages
+base0C = "#86c1b9"
+base0D = "#7cafc2" # selected day, active tab, focused event
+base0E = "#ba8baf" # categories, recurring marks, holidays
+base0F = "#a16946"
+
+# Which palette slot each part of the UI uses. Uncomment to remap.
+[theme.roles]
+# background = "base00"
+# panel = "base01"
+# selection = "base02"
+# border = "base03"
+# muted = "base04"
+# text = "base05"
+# danger = "base08"
+# urgent = "base09"
+# today = "base0A"
+# event = "base0B"
+# accent = "base0D"
+# tag = "base0E"
+
+# Key bindings in Vim notation: "gg", "<C-d>", "<S-Tab>", "<CR>", "<Esc>",
+# "<Space>", "<lt>" for <. An entry replaces all keys of that action in that
+# mode; [] unbinds it. A sequence taken from another action moves to this one.
+# A binding can't be a prefix of another (no "g" next to "gg").
+# The defaults are listed commented out.
+
+[keybindings.normal]
+# left = ["h", "<Left>"]
+# down = ["j", "<Down>"]
+# up = ["k", "<Up>"]
+# right = ["l", "<Right>"]
+# week_next = ["w"]
+# week_prev = ["b"]
+# month_next = ["}"]
+# month_prev = ["{"]
+# row_start = ["0", "<Home>"]
+# row_end = ["$", "<End>"]
+# viewport_first = ["gg"]
+# viewport_last = ["G"]
+# today = ["t", "."]
+# view_next = ["<Tab>"]
+# view_prev = ["<S-Tab>"]
+# view_month = ["1"]
+# view_week = ["2"]
+# view_day = ["3"]
+# focus = ["<CR>"]
+# new_event = ["o"]
+# new_all_day = ["O"]
+# delete = ["dd"]
+# change = ["cc"]
+# yank = ["yy"]
+# paste = ["p"]
+# search = ["/"]
+# search_next = ["n"]
+# search_prev = ["N"]
+# command = [":"]
+# visual = ["v"]
+# escape = ["<Esc>", "<C-c>"]
+# help = ["?"]
+# quit = ["ZZ"]
+
+[keybindings.visual]
+# left = ["h", "<Left>"]
+# down = ["j", "<Down>"]
+# up = ["k", "<Up>"]
+# right = ["l", "<Right>"]
+# week_next = ["w"]
+# week_prev = ["b"]
+# month_next = ["}"]
+# month_prev = ["{"]
+# row_start = ["0", "<Home>"]
+# row_end = ["$", "<End>"]
+# viewport_first = ["gg"]
+# viewport_last = ["G"]
+# today = ["t", "."]
+# delete = ["d", "x"]
+# yank = ["y"]
+# shift_later = [">"]
+# shift_earlier = ["<lt>"]
+# new_event = ["o"]
+# escape = ["<Esc>", "<C-c>", "v"]

@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use super::form::{Form, Submit, TextInput};
 use super::keymap::{Action, Key, KeyMode, Keymap, Resolved};
 use super::theme::Theme;
+use crate::config::{self, Config};
 use crate::db::{self, Db};
 use crate::model::{Event, Exception, Occurrence, Status};
 use crate::settings::{Settings, View};
@@ -105,6 +106,10 @@ pub struct App {
     cache: Vec<Occurrence>,
     loaded: Option<(NaiveDate, NaiveDate)>,
     stamp: Option<String>,
+    /// config.toml being followed for live reloads, and its last-seen version.
+    config_path: Option<PathBuf>,
+    config_stamp: config::Stamp,
+    database_path: Option<PathBuf>,
 }
 
 fn matches(o: &Occurrence, needle: &str) -> bool {
@@ -150,11 +155,80 @@ impl App {
             cache: Vec::new(),
             loaded: None,
             stamp: None,
+            config_path: None,
+            config_stamp: None,
+            database_path: None,
         };
         app.stamp = app.read_stamp();
         app.goto_today();
         app.refresh();
         app
+    }
+
+    /// Switches to new settings, theme and keys, keeping the cursor where
+    /// it is (clamped into the new grid).
+    pub fn apply_config(&mut self, cfg: Config) {
+        // slots are counted in the old granularity; carry over the time of day
+        let (minutes, top) = (
+            self.slot * self.settings.slot_minutes,
+            self.scroll * self.settings.slot_minutes,
+        );
+        self.settings = cfg.settings;
+        self.theme = cfg.theme;
+        self.keymap = cfg.keymap;
+        self.pending.clear();
+        self.slot = self.clamp_slot(minutes / self.settings.slot_minutes);
+        self.scroll = top / self.settings.slot_minutes;
+        self.keep_slot_visible();
+        self.invalidate();
+    }
+
+    /// Follows `path` from now on: any change to it is loaded and applied.
+    pub fn watch_config(&mut self, path: PathBuf, database_path: Option<PathBuf>) {
+        self.config_stamp = config::stamp(&path);
+        self.config_path = Some(path);
+        self.database_path = database_path;
+    }
+
+    fn check_config(&mut self) {
+        let Some(path) = self.config_path.clone() else {
+            return;
+        };
+        let stamp = config::stamp(&path);
+        if stamp == self.config_stamp {
+            return;
+        }
+        self.config_stamp = stamp;
+        if self.config_stamp.is_some() {
+            self.reload_config(&path);
+        }
+    }
+
+    fn reload_config(&mut self, path: &std::path::Path) {
+        match config::load(path) {
+            Ok(cfg) => {
+                let moved = cfg.database_path != self.database_path;
+                self.apply_config(cfg);
+                if moved {
+                    self.info(
+                        "config reloaded; database_path changes take effect when vcal restarts",
+                    );
+                } else {
+                    self.info("config reloaded");
+                }
+            }
+            Err(e) => {
+                // the first link is the full path; the file name is enough here
+                let name = path
+                    .file_name()
+                    .map_or("config".into(), |n| n.to_string_lossy());
+                let why: Vec<String> = e.chain().skip(1).map(ToString::to_string).collect();
+                self.error(format!(
+                    "{name}: {}; keeping the previous settings",
+                    why.join(": ")
+                ));
+            }
+        }
     }
 
     /// Moves the cursor to `date`, at the current slot for today and the
@@ -424,6 +498,7 @@ impl App {
     /// Periodic housekeeping: clock, and reloading after writes from
     /// other processes.
     pub fn tick(&mut self, now: i64) {
+        self.check_config();
         let day_changed = time::local_date(now, self.tz) != self.today();
         self.now = now;
         let stamp = self.read_stamp();
@@ -1089,6 +1164,10 @@ impl App {
             "reload" => {
                 self.reload();
                 self.info("reloaded");
+                if let Some(path) = self.config_path.clone() {
+                    self.config_stamp = config::stamp(&path);
+                    self.reload_config(&path);
+                }
             }
             _ if time::parse_when(input, self.tz, self.now).is_ok() => self.jump(input),
             _ => self.error(format!("not a command: {input}")),

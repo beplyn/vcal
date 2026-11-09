@@ -121,7 +121,7 @@ fn render_header(buf: &mut Buffer, area: Rect, app: &App) {
         let style = if v == app.view {
             Style::new()
                 .bg(t.accent())
-                .fg(t.base(0))
+                .fg(t.on_color())
                 .add_modifier(Modifier::BOLD)
         } else {
             t.muted()
@@ -180,7 +180,7 @@ fn render_status(buf: &mut Buffer, area: Rect, app: &App) {
             label,
             Style::new()
                 .bg(mode_bg)
-                .fg(t.base(0))
+                .fg(t.on_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -383,7 +383,7 @@ fn render_day_cell(
     let number_style = if date == app.today() {
         Style::new()
             .bg(t.today())
-            .fg(t.base(0))
+            .fg(t.on_color())
             .add_modifier(Modifier::BOLD)
     } else if !in_month {
         t.inactive()
@@ -759,7 +759,7 @@ fn render_timeline(buf: &mut Buffer, area: Rect, app: &mut App, days: &[NaiveDat
             } else {
                 occ_style(app, o).fg.unwrap_or(t.event())
             };
-            let style = Style::new().bg(bg).fg(t.base(0));
+            let style = Style::new().bg(bg).fg(t.on_color());
             for slot in first..last {
                 let y = top + (slot - app.scroll) as u16;
                 buf.set_style(Rect::new(x, y, w, 1), style);

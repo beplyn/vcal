@@ -241,7 +241,7 @@ pub struct Binding {
     pub action: Action,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
     pub normal: Vec<Binding>,
     pub visual: Vec<Binding>,
@@ -365,6 +365,41 @@ impl Keymap {
             .map(|b| b.keys.iter().map(Key::to_string).collect())
             .collect()
     }
+
+    /// Replaces every binding of `action` in `mode` with `sequences` (empty
+    /// unbinds it). A sequence another action had moves to this one.
+    pub fn rebind(&mut self, mode: KeyMode, action: Action, sequences: Vec<Vec<Key>>) {
+        let list = match mode {
+            KeyMode::Normal => &mut self.normal,
+            KeyMode::Visual => &mut self.visual,
+        };
+        list.retain(|b| b.action != action && !sequences.contains(&b.keys));
+        list.extend(sequences.into_iter().map(|keys| Binding { keys, action }));
+    }
+
+    /// Bindings that are a strict prefix of another in the same mode: the
+    /// longer one could never fire without a timeout.
+    pub fn conflicts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (mode, list) in [("normal", &self.normal), ("visual", &self.visual)] {
+            for short in list {
+                for long in list {
+                    if short.keys.len() < long.keys.len() && long.keys.starts_with(&short.keys) {
+                        let show =
+                            |b: &Binding| b.keys.iter().map(Key::to_string).collect::<String>();
+                        out.push(format!(
+                            "{mode}: \"{}\" ({}) hides \"{}\" ({})",
+                            show(short),
+                            short.action.name(),
+                            show(long),
+                            long.action.name()
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -436,21 +471,40 @@ mod tests {
     #[test]
     fn no_binding_shadows_another() {
         // A complete binding that is also a prefix would need a timeout to resolve.
-        let km = Keymap::default();
-        for list in [&km.normal, &km.visual] {
-            for a in list.iter() {
-                for b in list.iter() {
-                    if a.keys.len() < b.keys.len() {
-                        assert!(
-                            !b.keys.starts_with(&a.keys),
-                            "{:?} shadows {:?}",
-                            a.keys,
-                            b.keys
-                        );
-                    }
-                }
-            }
-        }
+        assert_eq!(Keymap::default().conflicts(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rebinding() {
+        let mut km = Keymap::default();
+        let keys = |s: &str| parse_keys(s).unwrap();
+        km.rebind(KeyMode::Normal, Action::Quit, vec![keys("q"), keys("t")]);
+        assert_eq!(
+            km.resolve(KeyMode::Normal, &keys("q")),
+            Resolved::Action(Action::Quit)
+        );
+        assert_eq!(
+            km.resolve(KeyMode::Normal, &keys("ZZ")),
+            Resolved::Unbound,
+            "old keys go"
+        );
+        // "t" moved from today to quit; today keeps "."
+        assert_eq!(
+            km.resolve(KeyMode::Normal, &keys("t")),
+            Resolved::Action(Action::Quit)
+        );
+        assert_eq!(km.keys_for(KeyMode::Normal, Action::Today), ["."]);
+        assert_eq!(
+            km.resolve(KeyMode::Visual, &keys("t")),
+            Resolved::Action(Action::Today)
+        );
+        km.rebind(KeyMode::Normal, Action::Help, vec![]);
+        assert!(km.keys_for(KeyMode::Normal, Action::Help).is_empty());
+        km.rebind(KeyMode::Normal, Action::Paste, vec![keys("g")]);
+        assert_eq!(
+            km.conflicts(),
+            ["normal: \"g\" (paste) hides \"gg\" (viewport_first)"]
+        );
     }
 
     #[test]

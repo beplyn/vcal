@@ -550,3 +550,126 @@ fn reloads_after_external_writes() {
     a.tick(a.now + 1);
     assert_eq!(a.day_events(a.cursor)[0].title, "From elsewhere");
 }
+
+mod config_reload {
+    use super::*;
+    use ratatui::style::Color;
+    use std::path::Path;
+
+    fn watched(dir: &Path, text: &str) -> (App, std::path::PathBuf) {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        let cfg = vcal::config::load(&path).unwrap();
+        let mut a = app();
+        a.apply_config(cfg);
+        a.watch_config(path.clone(), None);
+        (a, path)
+    }
+
+    #[test]
+    fn applies_changes_on_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, path) = watched(dir.path(), "");
+        assert!(a.settings.clock_24h);
+        a.tick(a.now);
+        assert!(a.message.is_none(), "no change, no reload");
+
+        std::fs::write(
+            &path,
+            "[general]\nclock = \"12h\"\n[theme]\nbase0D = \"#123456\"\n[keybindings.normal]\nquit = [\"q\"]\n",
+        )
+        .unwrap();
+        a.tick(a.now);
+        assert!(!a.settings.clock_24h);
+        assert_eq!(a.theme.accent(), Color::Rgb(0x12, 0x34, 0x56));
+        assert_eq!(a.message.as_ref().unwrap().text, "config reloaded");
+
+        // the new colour is what gets drawn: the active tab uses the accent
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| vcal::tui::ui::render(f, &mut a)).unwrap();
+        let tab = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "M" && c.bg == Color::Rgb(0x12, 0x34, 0x56));
+        assert!(tab.is_some(), "Month tab drawn in the configured accent");
+
+        // and the new keys work
+        press(&mut a, "q");
+        assert!(a.quit);
+    }
+
+    #[test]
+    fn broken_config_keeps_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, path) = watched(dir.path(), "[general]\nclock = \"12h\"\n");
+        std::fs::write(&path, "[general]\nclock = \"13h\"\n").unwrap();
+        a.tick(a.now);
+        assert!(!a.settings.clock_24h, "still the last good config");
+        let msg = a.message.clone().unwrap();
+        assert!(
+            msg.error
+                && msg.text.contains("[general] clock")
+                && msg.text.contains("keeping the previous"),
+            "{msg:?}"
+        );
+
+        // fixing the file recovers
+        std::fs::write(&path, "[general]\nclock = \"24h\"\n").unwrap();
+        a.tick(a.now);
+        assert!(a.settings.clock_24h);
+    }
+
+    #[test]
+    fn follows_symlink_swaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gen1, gen2) = (dir.path().join("gen1.toml"), dir.path().join("gen2.toml"));
+        std::fs::write(&gen1, "[views]\nstart = \"week\"\n").unwrap();
+        std::fs::write(&gen2, "[views]\nstart = \"day\" \n").unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&gen1, &link).unwrap();
+        let mut a = app();
+        a.apply_config(vcal::config::load(&link).unwrap());
+        a.watch_config(link.clone(), None);
+        assert_eq!(a.settings.start_view, View::Week);
+        // what a Home-Manager switch does
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&gen2, &link).unwrap();
+        a.tick(a.now);
+        assert_eq!(a.settings.start_view, View::Day);
+    }
+
+    #[test]
+    fn slot_granularity_change_keeps_the_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, path) = watched(dir.path(), "");
+        press(&mut a, "2");
+        assert_eq!(a.slot, 20, "10:00 at 30 minutes");
+        std::fs::write(&path, "[views]\nslot_minutes = 15\n").unwrap();
+        a.tick(a.now);
+        assert_eq!(a.slot, 40, "still 10:00 at 15 minutes");
+        std::fs::write(&path, "[views]\nslot_minutes = 60\nfirst_hour = 12\n").unwrap();
+        a.tick(a.now);
+        assert_eq!(a.slot, 12, "clamped into the new visible hours");
+    }
+
+    #[test]
+    fn database_path_change_needs_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, path) = watched(dir.path(), "");
+        std::fs::write(
+            &path,
+            "[general]\ndatabase_path = \"/elsewhere/events.db\"\n",
+        )
+        .unwrap();
+        a.tick(a.now);
+        assert!(
+            a.message
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("take effect when vcal restarts")
+        );
+    }
+}

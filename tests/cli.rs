@@ -9,6 +9,9 @@ fn vcal(db: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vcal"))
         .args(args)
         .env("VCAL_DB", db)
+        // never touch the real ~/.config
+        .env("XDG_CONFIG_HOME", db.parent().unwrap())
+        .env_remove("VCAL_CONFIG")
         .env("TZ", "Europe/Berlin")
         .stdin(Stdio::null())
         .output()
@@ -210,7 +213,9 @@ fn creates_db_under_xdg_data_home() {
     let out = Command::new(env!("CARGO_BIN_EXE_vcal"))
         .args(["query", "--format", "json"])
         .env_remove("VCAL_DB")
+        .env_remove("VCAL_CONFIG")
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
         .env("TZ", "UTC")
         .output()
         .unwrap();
@@ -221,4 +226,295 @@ fn creates_db_under_xdg_data_home() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[]");
     assert!(dir.path().join("calendar/events.db").exists());
+}
+
+fn err(db: &Path, args: &[&str]) -> String {
+    let out = vcal(db, args);
+    assert!(!out.status.success(), "vcal {args:?} should fail");
+    String::from_utf8(out.stderr).unwrap()
+}
+
+fn one(db: &Path, day: &str) -> Value {
+    let rows = json(db, day, day);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0].clone()
+}
+
+#[test]
+fn edit_single_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let id = ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Dentist",
+            "-s",
+            "2026-11-10 14:00",
+            "-D",
+            "45m",
+            "-c",
+            "health",
+            "-l",
+            "Dr. Lee",
+        ],
+    );
+    let id = id.trim();
+
+    assert_eq!(ok(&db, &["edit", id, "--title", "Orthodontist"]).trim(), id);
+    let row = one(&db, "2026-11-10");
+    assert_eq!(
+        (row["title"].as_str(), row["category"].as_str()),
+        (Some("Orthodontist"), Some("health"))
+    );
+
+    // a lone --start moves the event and keeps its 45 minutes
+    ok(&db, &["edit", id, "--start", "2026-11-11 09:00"]);
+    let row = one(&db, "2026-11-11");
+    assert_eq!(row["start"], "2026-11-11T09:00:00+01:00");
+    assert_eq!(row["end"], "2026-11-11T09:45:00+01:00");
+
+    ok(
+        &db,
+        &[
+            "edit",
+            id,
+            "--duration",
+            "2h",
+            "--category",
+            "",
+            "--location",
+            "",
+        ],
+    );
+    let row = one(&db, "2026-11-11");
+    assert_eq!(row["end"], "2026-11-11T11:00:00+01:00");
+    assert_eq!(
+        (row["category"].clone(), row["location"].clone()),
+        (Value::Null, Value::Null)
+    );
+
+    ok(&db, &["edit", id, "--all-day", "--end", "2026-11-12"]);
+    let row = one(&db, "2026-11-12");
+    assert_eq!(
+        (
+            row["all_day"].as_bool(),
+            row["start"].as_str(),
+            row["end"].as_str()
+        ),
+        (Some(true), Some("2026-11-11"), Some("2026-11-13"))
+    );
+
+    assert!(err(&db, &["edit", id, "--timed"]).contains("needs --start with a time"));
+    ok(&db, &["edit", id, "--timed", "--start", "2026-11-11 15:00"]);
+    let row = one(&db, "2026-11-11");
+    assert_eq!(
+        (row["all_day"].as_bool(), row["end"].as_str()),
+        (Some(false), Some("2026-11-11T16:00:00+01:00"))
+    );
+
+    ok(&db, &["edit", id, "--status", "tentative"]);
+    assert_eq!(one(&db, "2026-11-11")["status"], "tentative");
+
+    assert!(err(&db, &["edit", id]).contains("nothing to change"));
+    assert!(err(&db, &["edit", "nope", "-t", "x"]).contains("no event with id nope"));
+    assert!(
+        err(&db, &["edit", id, "--end", "2026-11-11 10:00"]).contains("end is before the start")
+    );
+}
+
+#[test]
+fn edit_series_and_occurrences() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let id = ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Standup",
+            "-s",
+            "2026-11-09 09:30",
+            "-D",
+            "15m",
+            "-r",
+            "FREQ=DAILY;COUNT=5",
+            "-c",
+            "work",
+        ],
+    );
+    let id = id.trim();
+
+    // one occurrence: retitle it, then move it; the retitle survives the move
+    let tuesday = one(&db, "2026-11-10")["occurrence"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    ok(
+        &db,
+        &[
+            "edit",
+            id,
+            "--occurrence",
+            &tuesday,
+            "--title",
+            "Standup (remote)",
+        ],
+    );
+    ok(
+        &db,
+        &[
+            "edit",
+            id,
+            "--occurrence",
+            &tuesday,
+            "--start",
+            "2026-11-10 11:00",
+        ],
+    );
+    let row = one(&db, "2026-11-10");
+    assert_eq!(row["title"], "Standup (remote)");
+    assert_eq!(row["start"], "2026-11-10T11:00:00+01:00");
+    assert_eq!(
+        row["end"], "2026-11-10T11:15:00+01:00",
+        "keeps the series' 15 minutes"
+    );
+    assert_eq!(
+        row["occurrence"].as_i64().unwrap().to_string(),
+        tuesday,
+        "same handle after moving"
+    );
+    assert_eq!(row["modified"], true);
+    assert_eq!(
+        one(&db, "2026-11-11")["title"],
+        "Standup",
+        "other days untouched"
+    );
+
+    // "" on an occurrence falls back to the series value
+    ok(
+        &db,
+        &["edit", id, "--occurrence", &tuesday, "--category", "home"],
+    );
+    assert_eq!(one(&db, "2026-11-10")["category"], "home");
+    ok(
+        &db,
+        &["edit", id, "--occurrence", &tuesday, "--category", ""],
+    );
+    assert_eq!(one(&db, "2026-11-10")["category"], "work");
+
+    // whole series: retitle all
+    ok(&db, &["edit", id, "--title", "Daily"]);
+    assert_eq!(one(&db, "2026-11-12")["title"], "Daily");
+    assert_eq!(
+        one(&db, "2026-11-10")["title"],
+        "Standup (remote)",
+        "the exception still wins"
+    );
+
+    // bad handles and series-only flags
+    assert!(
+        err(&db, &["edit", id, "--occurrence", "12345", "-t", "x"])
+            .contains("no occurrence at 12345")
+    );
+    let wednesday = one(&db, "2026-11-11")["occurrence"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    ok(&db, &["rm", id, "--occurrence", &wednesday]);
+    assert!(err(&db, &["edit", id, "--occurrence", &wednesday, "-t", "x"]).contains("cancelled"));
+    assert!(
+        err(&db, &["edit", id, "--occurrence", &tuesday, "--rrule", ""])
+            .contains("cannot be used with")
+    );
+
+    // dropping the rule makes it a single event on its first day
+    ok(&db, &["edit", id, "--rrule", ""]);
+    assert_eq!(json(&db, "2026-11-09", "2026-11-14").len(), 1);
+    let single = ok(&db, &["add", "-t", "Once", "-s", "2026-11-20 10:00"]);
+    assert!(
+        err(
+            &db,
+            &["edit", single.trim(), "--occurrence", "1", "-t", "x"]
+        )
+        .contains("doesn't repeat")
+    );
+}
+
+#[test]
+fn writes_and_reads_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let config = dir.path().join("calendar/config.toml");
+
+    assert_eq!(
+        ok(&db, &["config", "path"]).trim(),
+        config.to_str().unwrap()
+    );
+    assert!(ok(&db, &["config", "check"]).contains("the defaults apply"));
+    assert!(!config.exists(), "inspecting doesn't create it");
+
+    // the first real command writes the documented default and says so
+    let out = vcal(&db, &["query"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("wrote the default config"));
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        ok(&db, &["config", "default"])
+    );
+    assert!(ok(&db, &["config", "check"]).starts_with("ok: "));
+    assert!(
+        String::from_utf8_lossy(&vcal(&db, &["query"]).stderr).is_empty(),
+        "only once"
+    );
+
+    // settings reach the CLI
+    std::fs::write(
+        &config,
+        "[general]\nclock = \"12h\"\ndefault_duration = \"20m\"\n",
+    )
+    .unwrap();
+    ok(&db, &["add", "-t", "Tea", "-s", "2026-11-10 15:00"]);
+    assert_eq!(
+        ok(&db, &["query", "--from", "2026-11-10"]),
+        "Tue 2026-11-10  3:00pm–3:20pm  Tea\n"
+    );
+
+    // a broken file is an error that names the key
+    std::fs::write(&config, "[views]\nslot_minutes = 7\n").unwrap();
+    assert!(err(&db, &["config", "check"]).contains("slot_minutes"));
+    assert!(err(&db, &["query"]).contains("slot_minutes"));
+}
+
+#[test]
+fn database_path_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let from_config = dir.path().join("configured.db");
+    std::fs::create_dir_all(dir.path().join("calendar")).unwrap();
+    std::fs::write(
+        dir.path().join("calendar/config.toml"),
+        format!(
+            "[general]\ndatabase_path = {:?}\n",
+            from_config.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let run = |db: Option<&Path>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_vcal"));
+        cmd.args(["add", "-t", "x", "-s", "2026-11-10 10:00"])
+            .env_remove("VCAL_DB")
+            .env_remove("VCAL_CONFIG")
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("XDG_DATA_HOME", dir.path().join("data"));
+        if let Some(db) = db {
+            cmd.env("VCAL_DB", db);
+        }
+        assert!(cmd.output().unwrap().status.success());
+    };
+    run(None);
+    assert!(from_config.exists(), "config's database_path");
+    let env_db = dir.path().join("env.db");
+    run(Some(&env_db));
+    assert!(env_db.exists(), "$VCAL_DB wins");
+    assert!(!dir.path().join("data/calendar/events.db").exists());
 }
