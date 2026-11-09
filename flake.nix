@@ -4,6 +4,8 @@
   inputs =
   {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    # the systems to build for; override with any nix-systems list
+    systems.url = "github:nix-systems/default";
     # only for checking the Home-Manager module (nix/checks.nix)
     home-manager =
     {
@@ -16,63 +18,21 @@
     {
       self,
       nixpkgs,
+      systems,
       home-manager,
     }:
     let
       inherit (nixpkgs) lib;
-      systems =
-      [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-      forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      manifest = (lib.importTOML ./Cargo.toml).package;
+      forAllSystems = f: lib.genAttrs (import systems) (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      # `pkgs.vcal` for any nixpkgs, built against that nixpkgs
+      overlays.default = final: _prev: { vcal = final.callPackage ./nix/package.nix { }; };
+
       packages = forAllSystems (pkgs:
       {
+        vcal = pkgs.callPackage ./nix/package.nix { };
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.vcal;
-
-        vcal = pkgs.rustPlatform.buildRustPackage
-        {
-          pname = manifest.name;
-          inherit (manifest) version;
-
-          src = lib.fileset.toSource
-          {
-            root = ./.;
-            fileset = lib.fileset.unions
-            [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./src
-              ./tests
-            ];
-          };
-          cargoLock.lockFile = ./Cargo.lock;
-
-          # nixpkgs links its own sqlite via pkg-config; plain `cargo build` bundles one
-          nativeBuildInputs = [ pkgs.installShellFiles pkgs.pkg-config ];
-          buildInputs = [ pkgs.sqlite ];
-
-          # the binary writes its own man page and completions
-          postInstall = lib.optionalString (pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform) ''
-            $out/bin/vcal gen-assets assets
-            installManPage assets/vcal.1
-            installShellCompletion --cmd vcal \
-              --bash assets/vcal.bash \
-              --fish assets/vcal.fish \
-              --zsh assets/_vcal
-          '';
-
-          meta =
-          {
-            inherit (manifest) description;
-            mainProgram = "vcal";
-          };
-        };
       });
 
       checks = forAllSystems (pkgs:
@@ -101,7 +61,11 @@
       }
       // import ./nix/checks.nix { inherit self pkgs home-manager; });
 
-      homeManagerModules.default = import ./nix/hm-module.nix self;
+      homeManagerModules =
+      {
+        default = import ./nix/hm-module.nix self;
+        vcal = self.homeManagerModules.default;
+      };
 
       devShells = forAllSystems (pkgs:
       {
