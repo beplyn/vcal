@@ -297,7 +297,7 @@ fn exceptions_need_a_series() {
 fn writes_touch_the_sentinel() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.db");
-    let mut db = Db::open(&path).unwrap();
+    let db = Db::open(&path).unwrap();
     let sentinel = db::sentinel_path(&path);
     assert_eq!(sentinel.file_name().unwrap(), "events.db.changed");
     // opening creates it empty, so watchers have something to follow

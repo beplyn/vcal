@@ -1,10 +1,23 @@
 {
   description = "vcal: a Vim-keybound terminal calendar backed by SQLite";
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+  inputs =
+  {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    # only for checking the Home-Manager module (nix/checks.nix)
+    home-manager =
+    {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+    }:
     let
       inherit (nixpkgs) lib;
       systems =
@@ -85,7 +98,8 @@
           cargo fmt --check
           touch $out
         '';
-      });
+      }
+      // import ./nix/checks.nix { inherit self pkgs home-manager; });
 
       homeManagerModules.default = import ./nix/hm-module.nix self;
 
