@@ -191,8 +191,7 @@ The dotfiles (`modules/home/desktop/calendar.nix`) wire vcal into the shell:
   occurrence of a repeating event or the whole series, except the series'
   times (use the TUI for those). Double-click a day, or use the terminal
   button, to open it in the TUI.
-- **`Mod+Shift+C`** (niri, sway, mango, Hyprland) or right-clicking the
-  waybar clock opens the TUI in wezterm.
+- Right-clicking the waybar clock opens the TUI in wezterm.
 - `services/Events.qml` calls `vcal query --format json` for the visible
   weeks, and re-queries 150 ms after `events.db.changed` changes and at
   midnight. It writes through `vcal add` / `edit` / `rm` one call at a time.
