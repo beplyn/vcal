@@ -88,6 +88,18 @@ enum Command {
     },
     /// Write events as an iCalendar (.ics) file, to stdout or FILE
     Export(ExportArgs),
+    /// Check the database, its events and the config; exits non-zero on a failure
+    Doctor,
+    /// Copy the database, consistently even while it's in use [default: a
+    /// timestamped file in backups/ next to the database]
+    Backup {
+        /// File or directory to write to
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+        /// Afterwards, delete all but the newest N backups in that directory
+        #[arg(long, value_name = "N")]
+        keep: Option<usize>,
+    },
     /// Inspect the configuration
     Config {
         #[command(subcommand)]
@@ -293,6 +305,18 @@ fn run_with(cli: Cli) -> Result<()> {
     let command = match cli.command {
         Some(Command::GenAssets { dir }) => return gen_assets(&dir),
         Some(Command::Config { action }) => return config_command(action, &config_path),
+        // runs even with a broken config, which it then reports
+        Some(Command::Doctor) => {
+            let from_config = config::load(&config_path)
+                .ok()
+                .and_then(|c| c.database_path);
+            let db_path = cli
+                .db
+                .clone()
+                .or(from_config)
+                .unwrap_or_else(db::default_path);
+            return doctor(&db_path, &config_path);
+        }
         other => other,
     };
     let (cfg, note) = config::load_or_create(&config_path)?;
@@ -333,7 +357,17 @@ fn run_with(cli: Cli) -> Result<()> {
         }
         Some(Command::Import { path }) => import(&mut Db::open(&db_path)?, &path, tz),
         Some(Command::Export(args)) => export(&Db::open(&db_path)?, args),
-        Some(Command::GenAssets { .. } | Command::Config { .. }) => unreachable!(),
+        Some(Command::Backup { path, keep }) => {
+            let (file, removed) =
+                crate::maintenance::backup(&Db::open(&db_path)?, path.as_deref(), keep)?;
+            for r in removed {
+                eprintln!("removed {}", r.display());
+            }
+            emit(&format!("{}\n", file.display()))
+        }
+        Some(Command::GenAssets { .. } | Command::Config { .. } | Command::Doctor) => {
+            unreachable!()
+        }
     }
 }
 
@@ -1265,6 +1299,21 @@ fn import(db: &mut Db, path: &Path, tz: Tz) -> Result<()> {
     }
     let (events, exceptions) = db.import(parsed.events, parsed.exceptions)?;
     eprintln!("imported {events} events, {exceptions} exceptions");
+    Ok(())
+}
+
+fn doctor(db_path: &Path, config_path: &Path) -> Result<()> {
+    let findings = crate::maintenance::doctor(&Db::open(db_path)?, config_path)?;
+    let mut out = String::new();
+    for f in &findings {
+        let _ = writeln!(out, "{f}");
+    }
+    emit(&out)?;
+    let failed = findings
+        .iter()
+        .filter(|f| f.level == crate::maintenance::Level::Fail)
+        .count();
+    ensure!(failed == 0, "{failed} check(s) failed");
     Ok(())
 }
 

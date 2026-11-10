@@ -903,3 +903,70 @@ fn next_for_waybar() {
         "--soon needs --waybar"
     );
 }
+
+#[test]
+fn doctor_and_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let id = ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Standup",
+            "-s",
+            "2026-11-09 09:30",
+            "-r",
+            "FREQ=DAILY",
+        ],
+    );
+    let id = id.trim();
+    let report = ok(&db, &["doctor"]);
+    assert!(report.contains("ok    SQLite integrity check"), "{report}");
+    assert!(report.contains("ok    1 events read cleanly"), "{report}");
+    assert!(!report.contains("FAIL"), "{report}");
+
+    // a cancelled occurrence, then the series moves away from it
+    let occ = json(&db, "2026-11-10", "2026-11-10")[0]["occurrence"].to_string();
+    ok(&db, &["rm", id, "--occurrence", &occ]);
+    ok(&db, &["edit", id, "--start", "2026-11-09 10:00"]);
+    let report = ok(&db, &["doctor"]);
+    assert!(
+        report.contains("1 cancelled occurrence(s) no longer match"),
+        "{report}"
+    );
+
+    let config = dir.path().join("calendar/config.toml");
+    std::fs::write(&config, "[views]\nstart = \"year\"\n").unwrap();
+    let out = vcal(&db, &["doctor"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("FAIL  config"));
+    std::fs::remove_file(&config).unwrap();
+
+    let first = ok(&db, &["backup"]);
+    let first = Path::new(first.trim());
+    assert!(first.starts_with(dir.path().join("backups")), "{first:?}");
+    let copy = dir.path().join("copy.db");
+    ok(&db, &["backup", copy.to_str().unwrap()]);
+    assert_eq!(json(&copy, "2026-11-12", "2026-11-12")[0]["id"], id);
+    assert!(err(&db, &["backup", copy.to_str().unwrap()]).contains("won't overwrite"));
+
+    // --keep prunes the default directory, oldest first
+    let backups = dir.path().join("backups");
+    for name in ["events-20200101T000000Z.db", "events-20210101T000000Z.db"] {
+        std::fs::write(backups.join(name), "").unwrap();
+    }
+    std::fs::write(backups.join("notes.txt"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let out = vcal(&db, &["backup", "--keep", "2"]);
+    assert!(out.status.success());
+    let mut left: Vec<String> = std::fs::read_dir(&backups)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    left.sort();
+    assert_eq!(left.len(), 3, "{left:?}");
+    assert!(!left.contains(&"events-20200101T000000Z.db".to_string()));
+    assert!(!left.contains(&"events-20210101T000000Z.db".to_string()));
+    assert!(left.contains(&"notes.txt".to_string()));
+}

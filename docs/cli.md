@@ -165,3 +165,27 @@ Home-Manager module's `notify.enable` sets up a systemd user timer for it
 minutes after the event starts, for when the machine was asleep. Then it's
 skipped. `vcal notify --dry-run` prints what it would send without sending or
 recording anything.
+
+## Maintenance: `vcal doctor` and `vcal backup`
+
+`vcal doctor` checks the database (schema version, WAL mode, SQLite's
+integrity and foreign-key checks, the change file), every event (time zone,
+recurrence rule, all-day bounds, changed or cancelled occurrences that no
+longer match their series), the config file, and whether `notify-send` is
+available when events have reminders. It prints one `ok`, `warn` or `FAIL`
+line per check and exits non-zero if anything failed. It still runs when the
+config is broken, so it can report that too.
+
+`vcal backup` writes a consistent copy of the database with SQLite's
+`VACUUM INTO`, which is safe while the TUI or a widget has it open. By
+default the copy goes to `backups/events-<UTC time>.db` next to the database.
+Give a file or a directory to write it somewhere else. `--keep N` then
+deletes all but the newest N `events-*.db` files in that directory, so a
+daily timer can run `vcal backup --keep 14`.
+
+To restore, quit vcal and copy a backup over the database, or merge one in
+without replacing anything:
+
+```sh
+vcal --db ~/.local/share/calendar/backups/events-20261110T120000Z.db export | vcal import -
+```
