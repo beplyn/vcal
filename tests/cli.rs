@@ -847,3 +847,59 @@ fn show_one_event() {
     assert_eq!(v["upcoming"].as_array().unwrap().len(), 5);
     assert!(err(&db, &["show", "nope"]).contains("no event with id nope"));
 }
+
+#[test]
+fn next_for_waybar() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let bar = |args: &[&str]| -> Value {
+        let mut all = vec!["next", "--waybar"];
+        all.extend_from_slice(args);
+        serde_json::from_str(&ok(&db, &all)).unwrap()
+    };
+    let empty = bar(&[]);
+    assert_eq!(
+        (empty["text"].as_str(), empty["class"].as_str()),
+        (Some(""), Some("none"))
+    );
+    assert_eq!(empty["tooltip"], "Nothing in the next 7d");
+
+    ok(&db, &["add", "-t", "Ongoing", "--start=-10m", "-D", "1h"]);
+    ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Q&A <live>",
+            "-s",
+            "+10m",
+            "-D",
+            "15m",
+            "-l",
+            "Hall",
+        ],
+    );
+    ok(&db, &["add", "-t", "Later", "-s", "+3h", "-D", "30m"]);
+
+    let v = bar(&["--format", "{title}"]);
+    assert_eq!(v["text"], "Q&amp;A &lt;live&gt;");
+    assert_eq!(v["class"], "soon");
+    let tooltip = v["tooltip"].as_str().unwrap();
+    assert_eq!(tooltip.lines().count(), 2, "{tooltip}");
+    assert!(
+        tooltip
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("Q&amp;A &lt;live&gt; · Hall")
+    );
+    assert_eq!(bar(&["--soon", "5m"])["class"], "upcoming");
+    assert_eq!(
+        bar(&["--ongoing", "--format", "{title}"])["class"],
+        "ongoing"
+    );
+    assert!(
+        !vcal(&db, &["next", "--soon", "5m"]).status.success(),
+        "--soon needs --waybar"
+    );
+}

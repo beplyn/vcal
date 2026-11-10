@@ -224,12 +224,25 @@ struct EditArgs {
     after_help = "TEMPLATE fields: {title} {location} {category} {description} {id}; {start} and \
 {end}, which take a strftime format as in {start:%a %H:%M}; {when} (\"14:00\", \"tomorrow 9:30\", \
 \"Thu 9:30\"); {in} (\"in 25m\", or \"now\" once it has started). {{ and }} are literal braces. \
-Prints nothing when there is no event."
+Prints nothing when there is no event (with --waybar, an empty text, which hides the module)."
 )]
 struct NextArgs {
     /// Output template [default: "{when} {title}"]
     #[arg(long, value_name = "TEMPLATE", conflicts_with = "json")]
     format: Option<String>,
+    /// Print JSON for a waybar custom module ("return-type": "json"): the
+    /// --format text, the coming events as the tooltip, and a class of
+    /// ongoing, soon, upcoming or none
+    #[arg(long, conflicts_with = "json")]
+    waybar: bool,
+    /// With --waybar, how close an event's start has to be for class "soon"
+    #[arg(
+        long,
+        value_name = "DURATION",
+        default_value = "15m",
+        requires = "waybar"
+    )]
+    soon: String,
     /// Print the event as a JSON object, with the fields of `query --format json`
     #[arg(long)]
     json: bool,
@@ -1103,7 +1116,7 @@ fn next(db: &Db, args: NextArgs, tz: Tz, settings: &Settings) -> Result<()> {
     let now = time::now();
     let within = time::parse_duration(&args.within)?;
     ensure!(within > 0, "--within must be positive");
-    let found = db
+    let mut found: Vec<Occurrence> = db
         .occurrences(now, now + within, tz, false)?
         .into_iter()
         .filter(|o| args.all_day || !o.all_day)
@@ -1111,16 +1124,85 @@ fn next(db: &Db, args: NextArgs, tz: Tz, settings: &Settings) -> Result<()> {
             let (.., start, end) = bounds(o, tz);
             start >= now || (args.ongoing && end > now)
         })
-        .min_by_key(|o| start_instant(o, tz));
-    let Some(o) = found else {
+        .collect();
+    found.sort_by_key(|o| start_instant(o, tz));
+    let template = args.format.as_deref().unwrap_or("{when} {title}");
+    if args.waybar {
+        let soon = time::parse_duration(&args.soon)?;
+        return emit(&(waybar(&found, template, soon, tz, now, settings, &args.within)? + "\n"));
+    }
+    let Some(o) = found.first() else {
         return Ok(());
     };
     emit(&if args.json {
-        serde_json::to_string(&JsonOccurrence::new(&o, tz))? + "\n"
+        serde_json::to_string(&JsonOccurrence::new(o, tz))? + "\n"
     } else {
-        let template = args.format.as_deref().unwrap_or("{when} {title}");
-        render_template(template, &o, tz, now, settings)? + "\n"
+        render_template(template, o, tz, now, settings)? + "\n"
     })
+}
+
+/// Escapes text for Pango markup, which waybar renders `text` and `tooltip` with.
+fn pango(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// The JSON a waybar `custom` module with `"return-type": "json"` reads: the
+/// next event as `text`, the coming ones as `tooltip`, and a `class` of
+/// `ongoing`, `soon`, `upcoming` or `none` to style it by.
+fn waybar(
+    found: &[Occurrence],
+    template: &str,
+    soon: i64,
+    tz: Tz,
+    now: i64,
+    settings: &Settings,
+    within: &str,
+) -> Result<String> {
+    #[derive(Serialize)]
+    struct Module {
+        text: String,
+        tooltip: String,
+        class: &'static str,
+        alt: &'static str,
+    }
+    let module = match found.first() {
+        None => Module {
+            text: String::new(),
+            tooltip: format!("Nothing in the next {within}"),
+            class: "none",
+            alt: "none",
+        },
+        Some(o) => {
+            let start = start_instant(o, tz);
+            let class = if start <= now {
+                "ongoing"
+            } else if start - now <= soon {
+                "soon"
+            } else {
+                "upcoming"
+            };
+            let mut tooltip = Vec::new();
+            for o in found.iter().take(10) {
+                let mut line = format!("{}  {}", when_label(o, tz, now, settings), o.title);
+                if let Some(l) = &o.location {
+                    let _ = write!(line, " · {l}");
+                }
+                tooltip.push(pango(&one_line(&line)));
+            }
+            if found.len() > 10 {
+                tooltip.push(format!("… and {} more", found.len() - 10));
+            }
+            Module {
+                text: pango(&render_template(template, o, tz, now, settings)?),
+                tooltip: tooltip.join("\n"),
+                class,
+                alt: class,
+            }
+        }
+    };
+    Ok(serde_json::to_string(&module)?)
 }
 
 /// How long after an occurrence starts its reminder may still go out (say

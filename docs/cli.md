@@ -116,6 +116,7 @@ vcal next --format '{start:%a %H:%M} {title}'   # strftime after the colon
 vcal next --ongoing                             # count one that has started as next
 vcal next --all-day --within 1d                 # include all-day events; look 1 day ahead
 vcal next --json                                # one object, the fields of `query`
+vcal next --waybar                              # JSON for a waybar module: text, tooltip, class
 ```
 
 Template fields: `{title}`, `{location}`, `{category}`, `{description}`,
@@ -130,6 +131,25 @@ A waybar module:
   "exec": "vcal next --format '{when} {title}'",
   "interval": 60
 }
+```
+
+`--waybar` prints the JSON that waybar's `"return-type": "json"` reads.
+`text` is the `--format` output, `tooltip` lists the next ten events, and
+`class` is `ongoing`, `soon` (it starts within `--soon`, 15 minutes by
+default), `upcoming`, or `none`. With nothing ahead, `text` is empty and
+waybar hides the module. Text is escaped for Pango markup.
+
+```json
+"custom/next-event": {
+  "exec": "vcal next --waybar --ongoing --format '{when} {title}'",
+  "return-type": "json",
+  "interval": 60
+}
+```
+
+```css
+#custom-next-event.soon    { color: @base09; }
+#custom-next-event.ongoing { color: @base0B; }
 ```
 
 ## Reminders
