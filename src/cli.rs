@@ -113,6 +113,13 @@ struct QueryArgs {
     /// Include cancelled events
     #[arg(long)]
     include_cancelled: bool,
+    /// Only occurrences whose title, category, notes or location contain TEXT
+    /// (ignoring case), like / in the TUI
+    #[arg(long, short, value_name = "TEXT")]
+    search: Option<String>,
+    /// Only occurrences in this category (repeatable; ignoring case)
+    #[arg(long, short, value_name = "NAME")]
+    category: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -343,7 +350,12 @@ fn query(db: &Db, args: QueryArgs, tz: Tz, settings: &Settings) -> Result<()> {
         },
     };
     ensure!(end >= start, "--to is before --from");
-    let occurrences = db.occurrences(start, end, tz, args.include_cancelled)?;
+    let occurrences: Vec<Occurrence> = db
+        .occurrences(start, end, tz, args.include_cancelled)?
+        .into_iter()
+        .filter(|o| args.search.as_deref().is_none_or(|s| o.matches(s)))
+        .filter(|o| args.category.is_empty() || o.in_category(&args.category))
+        .collect();
     emit(&match args.format {
         Format::Json => {
             let rows: Vec<_> = occurrences

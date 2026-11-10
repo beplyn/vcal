@@ -129,16 +129,7 @@ fn expand_home(arg: &str) -> PathBuf {
 }
 
 fn matches(o: &Occurrence, needle: &str) -> bool {
-    let needle = needle.to_lowercase();
-    [
-        Some(&o.title),
-        o.category.as_ref(),
-        Some(&o.description),
-        o.location.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|s| s.to_lowercase().contains(&needle))
+    o.matches(needle)
 }
 
 impl App {

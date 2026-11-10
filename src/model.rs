@@ -179,4 +179,25 @@ impl Occurrence {
     pub fn recurring(&self) -> bool {
         self.original_start.is_some()
     }
+
+    /// Case-insensitive substring match on title, category, notes and
+    /// location: what `/` in the TUI and `query --search` filter on.
+    pub fn matches(&self, needle: &str) -> bool {
+        let needle = needle.to_lowercase();
+        [
+            Some(&self.title),
+            self.category.as_ref(),
+            Some(&self.description),
+            self.location.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|s| s.to_lowercase().contains(&needle))
+    }
+
+    pub fn in_category(&self, names: &[String]) -> bool {
+        self.category
+            .as_deref()
+            .is_some_and(|c| names.iter().any(|n| n.eq_ignore_ascii_case(c)))
+    }
 }

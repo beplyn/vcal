@@ -24,6 +24,7 @@ Durations (`-D`, `default_duration`) look like `45m`, `1h`, `1h30m`.
 ```sh
 # what's on; text (default), json or tsv
 vcal query --from today --to +7d --format json
+vcal query --from today --to +30d --search dentist -c health   # filter like / in the TUI
 
 # create; prints the new id
 vcal add -t "Dentist" -s "2026-11-10 14:00" -D 45m -c health -l "Dr. Lee"

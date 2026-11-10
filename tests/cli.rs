@@ -724,3 +724,59 @@ fn export_round_trips_through_import() {
     );
     assert!(err(&db, &["export", "--id", "nope"]).contains("no event with id nope"));
 }
+
+#[test]
+fn query_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Dentist",
+            "-s",
+            "2026-11-10 14:00",
+            "-c",
+            "health",
+            "-l",
+            "Dr. Lee",
+        ],
+    );
+    ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Review",
+            "-s",
+            "2026-11-10 10:00",
+            "-c",
+            "Work",
+            "-n",
+            "quarterly numbers",
+        ],
+    );
+    ok(
+        &db,
+        &["add", "-t", "Gym", "-s", "2026-11-10 18:00", "-c", "health"],
+    );
+    let titles = |args: &[&str]| -> Vec<String> {
+        let mut all = vec!["query", "--from", "2026-11-10", "--format", "json"];
+        all.extend_from_slice(args);
+        serde_json::from_str::<Vec<Value>>(&ok(&db, &all))
+            .unwrap()
+            .iter()
+            .map(|r| r["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(titles(&["--search", "lee"]), ["Dentist"]);
+    assert_eq!(titles(&["-s", "QUARTERLY"]), ["Review"]);
+    assert_eq!(titles(&["-c", "health"]), ["Dentist", "Gym"]);
+    assert_eq!(
+        titles(&["-c", "work", "-c", "health"]),
+        ["Review", "Dentist", "Gym"]
+    );
+    assert_eq!(titles(&["-c", "health", "-s", "gym"]), ["Gym"]);
+    assert!(titles(&["-s", "nothing"]).is_empty());
+}
