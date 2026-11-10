@@ -1,6 +1,7 @@
 //! A small iCalendar (RFC 5545) reader for `vcal import`: VEVENTs with
 //! SUMMARY, DESCRIPTION, LOCATION, CATEGORIES, STATUS, DTSTART, DTEND or
-//! DURATION, RRULE, EXDATE and RECURRENCE-ID overrides. TZIDs must be IANA
+//! DURATION, RRULE, EXDATE, RECURRENCE-ID overrides, and the first VALARM
+//! with a TRIGGER relative to the start, as the reminder. TZIDs must be IANA
 //! names; anything else is read in the local zone.
 
 use std::collections::HashMap;
@@ -192,6 +193,7 @@ pub fn parse(input: &str, local: Tz) -> Result<Parsed> {
     let mut parsed = Parsed::default();
     let mut stack: Vec<String> = Vec::new();
     let mut current: Option<Vec<Prop>> = None;
+    let mut reminder: Option<i64> = None;
     for line in unfold(input) {
         let Some(prop) = parse_prop(&line) else {
             continue;
@@ -201,18 +203,26 @@ pub fn parse(input: &str, local: Tz) -> Result<Parsed> {
                 let comp = prop.value.trim().to_ascii_uppercase();
                 if comp == "VEVENT" && stack.last().is_some_and(|c| c == "VCALENDAR") {
                     current = Some(Vec::new());
+                    reminder = None;
                 }
                 stack.push(comp);
             }
             "END" => {
                 if stack.pop().as_deref() == Some("VEVENT")
                     && let Some(props) = current.take()
-                    && let Err(err) = vevent(props, local, &mut parsed)
+                    && let Err(err) = vevent(props, reminder.take(), local, &mut parsed)
                 {
                     parsed.warnings.push(format!("skipped an event: {err:#}"));
                 }
             }
-            // Properties of a nested component (VALARM) don't belong to the event.
+            "TRIGGER"
+                if reminder.is_none()
+                    && stack.last().is_some_and(|c| c == "VALARM")
+                    && stack.iter().rev().nth(1).is_some_and(|c| c == "VEVENT") =>
+            {
+                reminder = trigger_minutes(&prop);
+            }
+            // Other properties of a nested component (VALARM) don't belong to the event.
             _ if stack.last().is_some_and(|c| c == "VEVENT") => {
                 if let Some(props) = current.as_mut() {
                     props.push(prop);
@@ -224,7 +234,25 @@ pub fn parse(input: &str, local: Tz) -> Result<Parsed> {
     Ok(parsed)
 }
 
-fn vevent(props: Vec<Prop>, local: Tz, parsed: &mut Parsed) -> Result<()> {
+/// Minutes before the start for a TRIGGER relative to it (`-PT15M`); `None`
+/// for absolute triggers, ones relative to the end, or ones after the start.
+fn trigger_minutes(prop: &Prop) -> Option<i64> {
+    let related_end = prop
+        .params
+        .get("RELATED")
+        .is_some_and(|r| r.eq_ignore_ascii_case("END"));
+    let absolute = prop
+        .params
+        .get("VALUE")
+        .is_some_and(|v| v.eq_ignore_ascii_case("DATE-TIME"));
+    if related_end || absolute {
+        return None;
+    }
+    let secs = parse_ics_duration(prop.value.trim()).ok()?;
+    (secs <= 0).then_some(-secs / 60)
+}
+
+fn vevent(props: Vec<Prop>, reminder: Option<i64>, local: Tz, parsed: &mut Parsed) -> Result<()> {
     let one = |name: &str| props.iter().find(|p| p.name == name);
     let text = |name: &str| {
         one(name)
@@ -280,6 +308,7 @@ fn vevent(props: Vec<Prop>, local: Tz, parsed: &mut Parsed) -> Result<()> {
     ev.category = one("CATEGORIES").and_then(|p| split_list(&p.value).into_iter().next());
     ev.all_day = all_day;
     ev.status = status;
+    ev.reminder = reminder;
     if all_day && ev.end <= ev.start {
         ev.end = ev.start + DAY;
     }
@@ -310,7 +339,8 @@ BEGIN:VEVENT\r\nUID:standup@example\r\nSUMMARY:Stand\r\n  up\r\n\
 DTSTART;TZID=Europe/Berlin:20261019T090000\r\nDURATION:PT30M\r\n\
 RRULE:FREQ=WEEKLY;BYDAY=MO\r\nEXDATE;TZID=Europe/Berlin:20261026T090000\r\n\
 CATEGORIES:work,daily\r\nDESCRIPTION:Line one\\nLine\\, two\r\n\
-BEGIN:VALARM\r\nDESCRIPTION:ignored\r\nEND:VALARM\r\nEND:VEVENT\r\n\
+BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:ignored\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n\
+BEGIN:VALARM\r\nTRIGGER;RELATED=END:-PT5M\r\nEND:VALARM\r\nEND:VEVENT\r\n\
 BEGIN:VEVENT\r\nUID:standup@example\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261102T090000\r\n\
 DTSTART;TZID=Europe/Berlin:20261102T100000\r\nDTEND;TZID=Europe/Berlin:20261102T103000\r\n\
 SUMMARY:Late standup\r\nEND:VEVENT\r\n\
@@ -330,9 +360,11 @@ DTEND;VALUE=DATE:20261123\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(standup.duration(), 1800);
         assert_eq!(standup.tzid.as_deref(), Some("Europe/Berlin"));
         assert_eq!(standup.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=MO"));
+        assert_eq!(standup.reminder, Some(15));
 
         let trip = &p.events[1];
         assert!(trip.all_day);
+        assert_eq!(trip.reminder, None);
         assert_eq!(trip.duration(), 3 * DAY);
         assert_eq!(
             time::floating_date(trip.start),

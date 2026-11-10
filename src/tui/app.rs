@@ -1013,6 +1013,7 @@ impl App {
                 ev.description = o.description.clone();
                 ev.category = o.category.clone();
                 ev.location = o.location.clone();
+                ev.reminder = o.reminder;
                 ev.all_day = o.all_day;
                 if !o.all_day {
                     ev.tzid = Some(tz.name().to_string());

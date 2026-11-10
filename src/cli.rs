@@ -60,6 +60,15 @@ enum Command {
     Edit(EditArgs),
     /// Delete an event, or one occurrence of a recurring event
     Rm(RmArgs),
+    /// Print the next event, for status bars
+    Next(NextArgs),
+    /// Send desktop notifications (notify-send) for reminders that are due;
+    /// meant to run every minute from a timer
+    Notify {
+        /// Print the notifications instead of sending them, and don't mark them sent
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Import events from an iCalendar (.ics) file, or - for stdin
     Import {
         #[arg(value_name = "FILE")]
@@ -137,6 +146,9 @@ struct AddArgs {
     /// RFC 5545 recurrence rule, e.g. "FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20270101"
     #[arg(long, short, value_name = "RULE")]
     rrule: Option<String>,
+    /// Notify this long before the start, e.g. 10m or 1d (see `vcal notify`)
+    #[arg(long, short = 'R', value_name = "DURATION")]
+    reminder: Option<String>,
     #[arg(long, default_value = "confirmed")]
     status: Status,
 }
@@ -144,14 +156,14 @@ struct AddArgs {
 #[derive(Args)]
 #[command(
     after_help = "Only the options you give change. An empty string clears --category, \
---location, --description or --rrule; with --occurrence it falls back to the series' value \
+--location, --description, --rrule or --reminder; with --occurrence it falls back to the series' value \
 instead."
 )]
 struct EditArgs {
     /// Event id, as printed by `add` or `query`
     id: String,
     /// Change only this occurrence (the `occurrence` value from `query`)
-    #[arg(long, value_name = "TS", conflicts_with_all = ["all_day", "timed", "rrule", "status"])]
+    #[arg(long, value_name = "TS", conflicts_with_all = ["all_day", "timed", "rrule", "status", "reminder"])]
     occurrence: Option<i64>,
     #[arg(long, short)]
     title: Option<String>,
@@ -179,8 +191,36 @@ struct EditArgs {
     /// New recurrence rule; "" makes it a single event
     #[arg(long, short, value_name = "RULE")]
     rrule: Option<String>,
+    /// New reminder lead time, e.g. 10m; "" removes the reminder
+    #[arg(long, short = 'R', value_name = "DURATION")]
+    reminder: Option<String>,
     #[arg(long)]
     status: Option<Status>,
+}
+
+#[derive(Args)]
+#[command(
+    after_help = "TEMPLATE fields: {title} {location} {category} {description} {id}; {start} and \
+{end}, which take a strftime format as in {start:%a %H:%M}; {when} (\"14:00\", \"tomorrow 9:30\", \
+\"Thu 9:30\"); {in} (\"in 25m\", or \"now\" once it has started). {{ and }} are literal braces. \
+Prints nothing when there is no event."
+)]
+struct NextArgs {
+    /// Output template [default: "{when} {title}"]
+    #[arg(long, value_name = "TEMPLATE", conflicts_with = "json")]
+    format: Option<String>,
+    /// Print the event as a JSON object, with the fields of `query --format json`
+    #[arg(long)]
+    json: bool,
+    /// How far ahead to look
+    #[arg(long, value_name = "DURATION", default_value = "7d")]
+    within: String,
+    /// Also count an event that has started and not ended yet
+    #[arg(long)]
+    ongoing: bool,
+    /// Include all-day events
+    #[arg(long)]
+    all_day: bool,
 }
 
 #[derive(Args)]
@@ -233,6 +273,10 @@ fn run_with(cli: Cli) -> Result<()> {
         Some(Command::Add(args)) => add(&mut Db::open(&db_path)?, args, tz, &cfg),
         Some(Command::Edit(args)) => edit(&mut Db::open(&db_path)?, args, tz, &cfg),
         Some(Command::Rm(args)) => rm(&mut Db::open(&db_path)?, args),
+        Some(Command::Next(args)) => next(&Db::open(&db_path)?, args, tz, &cfg.settings),
+        Some(Command::Notify { dry_run }) => {
+            notify(&mut Db::open(&db_path)?, dry_run, tz, &cfg.settings)
+        }
         Some(Command::Import { path }) => import(&mut Db::open(&db_path)?, &path, tz),
         Some(Command::GenAssets { .. } | Command::Config { .. }) => unreachable!(),
     }
@@ -310,6 +354,8 @@ struct JsonOccurrence<'a> {
     start_ts: i64,
     end_ts: i64,
     status: Status,
+    /// Minutes before the start; `null` for none
+    reminder: Option<i64>,
     recurring: bool,
     modified: bool,
 }
@@ -330,6 +376,7 @@ impl<'a> JsonOccurrence<'a> {
             start_ts,
             end_ts,
             status: o.status,
+            reminder: o.reminder,
             recurring: o.recurring(),
             modified: o.modified,
         }
@@ -520,6 +567,12 @@ fn add(db: &mut Db, args: AddArgs, tz: Tz, cfg: &Config) -> Result<()> {
     ev.location = args.location;
     ev.rrule = args.rrule;
     ev.status = args.status;
+    ev.reminder = args
+        .reminder
+        .as_deref()
+        .map(time::parse_reminder)
+        .transpose()?
+        .flatten();
     if !ev.all_day {
         ev.tzid = Some(tz.name().to_string());
     }
@@ -543,6 +596,7 @@ fn edit(db: &mut Db, args: EditArgs, tz: Tz, cfg: &Config) -> Result<()> {
         || args.location.is_some()
         || args.rrule.is_some()
         || args.status.is_some()
+        || args.reminder.is_some()
         || args.all_day
         || args.timed;
     ensure!(
@@ -600,6 +654,9 @@ fn edit_series(
     }
     if let Some(s) = args.status {
         ev.status = s;
+    }
+    if let Some(r) = &args.reminder {
+        ev.reminder = time::parse_reminder(r)?;
     }
     let had_exceptions = ev.is_recurring() && !db.exceptions(&ev.id)?.is_empty();
     let saved = db.update(ev)?;
@@ -675,6 +732,179 @@ fn rm(db: &mut Db, args: RmArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The occurrence's real start instant (local midnight for all-day events).
+fn start_instant(o: &Occurrence, tz: Tz) -> i64 {
+    bounds(o, tz).2
+}
+
+/// "14:00", "tomorrow 9:30", "Thu 9:30", or for all-day events "today",
+/// "tomorrow", "Thu".
+fn when_label(o: &Occurrence, tz: Tz, now: i64, settings: &Settings) -> String {
+    let (day, time) = if o.all_day {
+        (time::floating_date(o.start), None)
+    } else {
+        let dt = time::in_tz(o.start, tz);
+        (dt.date_naive(), Some(settings.time(dt)))
+    };
+    let today = time::local_date(now, tz);
+    let day = match (day - today).num_days() {
+        0 => o.all_day.then(|| "today".to_string()),
+        1 => Some("tomorrow".into()),
+        n if n < 0 => Some(day.format("%Y-%m-%d").to_string()),
+        _ => Some(day.format("%a").to_string()),
+    };
+    [day, time]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Fills a `next --format` template.
+fn render_template(
+    template: &str,
+    o: &Occurrence,
+    tz: Tz,
+    now: i64,
+    settings: &Settings,
+) -> Result<String> {
+    use chrono::format::{Item, StrftimeItems};
+    let (start_ts, end_ts) = {
+        let (.., s, e) = bounds(o, tz);
+        (s, e)
+    };
+    let stamp = |ts: i64, spec: Option<&str>| -> Result<String> {
+        let dt = time::in_tz(ts, tz);
+        Ok(match spec {
+            Some(spec) => {
+                ensure!(
+                    !StrftimeItems::new(spec).any(|i| matches!(i, Item::Error)),
+                    "bad time format {spec:?} in --format"
+                );
+                dt.format(spec).to_string()
+            }
+            None if o.all_day => dt.format("%Y-%m-%d").to_string(),
+            None => settings.time(dt),
+        })
+    };
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(i) = rest.find(['{', '}']) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        if tail.starts_with("{{") || tail.starts_with("}}") {
+            out.push_str(&tail[..1]);
+            rest = &tail[2..];
+            continue;
+        }
+        ensure!(
+            tail.starts_with('{'),
+            "unmatched }} in --format (write }}}} for a literal one)"
+        );
+        let close = tail
+            .find('}')
+            .context("unclosed { in --format (write {{ for a literal one)")?;
+        let field = &tail[1..close];
+        let (name, spec) = match field.split_once(':') {
+            Some((n, s)) => (n, Some(s)),
+            None => (field, None),
+        };
+        let value = match (name, spec) {
+            ("title", None) => one_line(&o.title),
+            ("location", None) => one_line(o.location.as_deref().unwrap_or("")),
+            ("category", None) => one_line(o.category.as_deref().unwrap_or("")),
+            ("description", None) => one_line(&o.description),
+            ("id", None) => o.event_id.clone(),
+            ("when", None) => when_label(o, tz, now, settings),
+            ("in", None) if start_ts <= now => "now".into(),
+            // round up, so "in 1m" until it starts
+            ("in", None) => format!("in {}", time::format_minutes((start_ts - now + 59) / 60)),
+            ("start", spec) => stamp(start_ts, spec)?,
+            // an all-day end is exclusive; show the last day
+            ("end", spec) if o.all_day => stamp(end_ts - DAY, spec)?,
+            ("end", spec) => stamp(end_ts, spec)?,
+            _ => bail!(
+                "unknown field {{{field}}} in --format (title, location, category, \
+                 description, id, when, in, start, end)"
+            ),
+        };
+        out.push_str(&value);
+        rest = &tail[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn next(db: &Db, args: NextArgs, tz: Tz, settings: &Settings) -> Result<()> {
+    let now = time::now();
+    let within = time::parse_duration(&args.within)?;
+    ensure!(within > 0, "--within must be positive");
+    let found = db
+        .occurrences(now, now + within, tz, false)?
+        .into_iter()
+        .filter(|o| args.all_day || !o.all_day)
+        .filter(|o| {
+            let (.., start, end) = bounds(o, tz);
+            start >= now || (args.ongoing && end > now)
+        })
+        .min_by_key(|o| start_instant(o, tz));
+    let Some(o) = found else {
+        return Ok(());
+    };
+    emit(&if args.json {
+        serde_json::to_string(&JsonOccurrence::new(&o, tz))? + "\n"
+    } else {
+        let template = args.format.as_deref().unwrap_or("{when} {title}");
+        render_template(template, &o, tz, now, settings)? + "\n"
+    })
+}
+
+/// How long after an occurrence starts its reminder may still go out (say
+/// the machine was asleep when it fell due).
+const NOTIFY_LATE: i64 = 15 * 60;
+
+fn notify(db: &mut Db, dry_run: bool, tz: Tz, settings: &Settings) -> Result<()> {
+    let now = time::now();
+    let lead = db.max_reminder()? * 60;
+    let mut sent = Vec::new();
+    let mut failure = None;
+    for o in db.occurrences(now - NOTIFY_LATE, now + lead + 1, tz, false)? {
+        let Some(minutes) = o.reminder else { continue };
+        let start = start_instant(&o, tz);
+        if now < start - minutes * 60 || now >= start + NOTIFY_LATE {
+            continue;
+        }
+        if db.was_notified(&o.event_id, start)? {
+            continue;
+        }
+        let mut body = when_label(&o, tz, now, settings);
+        if !o.all_day {
+            let _ = write!(body, "–{}", settings.time(time::in_tz(o.end, tz)));
+        }
+        if let Some(l) = &o.location {
+            let _ = write!(body, " · {l}");
+        }
+        if dry_run {
+            emit(&format!("{}\t{body}\n", one_line(&o.title)))?;
+            continue;
+        }
+        let status = std::process::Command::new("notify-send")
+            .args(["--app-name=vcal", "--icon=x-office-calendar", "--"])
+            .arg(&o.title)
+            .arg(&body)
+            .status();
+        match status {
+            Ok(s) if s.success() => sent.push((o.event_id.clone(), start)),
+            Ok(s) => failure = Some(anyhow::anyhow!("notify-send failed ({s})")),
+            Err(e) => failure = Some(anyhow::Error::new(e).context("can't run notify-send")),
+        }
+    }
+    if !sent.is_empty() {
+        db.mark_notified(&sent, now, now - 2 * DAY)?;
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 fn import(db: &mut Db, path: &Path, tz: Tz) -> Result<()> {

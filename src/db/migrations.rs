@@ -49,6 +49,18 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     );
     "#,
+    // 2: reminders, and which occurrences were already notified
+    r#"
+    ALTER TABLE events ADD COLUMN reminder_minutes INTEGER
+        CHECK (reminder_minutes IS NULL OR reminder_minutes >= 0);
+
+    CREATE TABLE notified (
+        event_id TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+        start_ts INTEGER NOT NULL,
+        sent_ts  INTEGER NOT NULL,
+        PRIMARY KEY (event_id, start_ts)
+    );
+    "#,
 ];
 
 pub fn latest() -> i64 {

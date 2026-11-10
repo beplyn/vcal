@@ -518,3 +518,128 @@ fn database_path_precedence() {
     assert!(env_db.exists(), "$VCAL_DB wins");
     assert!(!dir.path().join("data/calendar/events.db").exists());
 }
+
+#[test]
+fn next_for_status_bars() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    assert_eq!(ok(&db, &["next"]), "", "nothing ahead prints nothing");
+
+    ok(&db, &["add", "-t", "Trip", "-s", "today", "--all-day"]);
+    ok(&db, &["add", "-t", "Ongoing", "--start=-10m", "-D", "1h"]);
+    ok(
+        &db,
+        &[
+            "add", "-t", "Later", "-s", "+3h", "-D", "30m", "-l", "Room 4",
+        ],
+    );
+    ok(&db, &["add", "-t", "Soon", "-s", "+30m", "-D", "15m"]);
+
+    assert!(ok(&db, &["next"]).ends_with(" Soon\n"));
+    assert_eq!(
+        ok(&db, &["next", "--format", "{title} {in} {{x}}"]),
+        "Soon in 30m {x}\n"
+    );
+    assert!(ok(&db, &["next", "--ongoing", "--format", "{title}|{in}"]).starts_with("Ongoing|now"));
+    assert!(
+        ok(
+            &db,
+            &["next", "--all-day", "--ongoing", "--format", "{title}"]
+        )
+        .starts_with("Trip")
+    );
+    assert_eq!(ok(&db, &["next", "--within", "20m"]), "");
+
+    let row: Value = serde_json::from_str(&ok(&db, &["next", "--json"])).unwrap();
+    assert_eq!(row["title"], "Soon");
+
+    let start = ok(&db, &["next", "--format", "{start:%Y-%m-%dT%H:%M}"]);
+    assert_eq!(start.trim().len(), 16);
+
+    for bad in ["{nope}", "{start:%Q}", "{title", "x}"] {
+        let out = vcal(&db, &["next", "--format", bad]);
+        assert!(!out.status.success(), "{bad} should fail");
+    }
+}
+
+#[test]
+fn reminders_notify_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let log = dir.path().join("sent.log");
+    let fake = bin.join("notify-send");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s|' \"$@\" >> {}\necho >> {}\n",
+            log.display(),
+            log.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let notify = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_vcal"))
+            .arg("notify")
+            .args(args)
+            .env("VCAL_DB", &db)
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env_remove("VCAL_CONFIG")
+            .env("TZ", "Europe/Berlin")
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    let due = ok(
+        &db,
+        &[
+            "add", "-t", "Dentist", "-s", "+10m", "-R", "15m", "-l", "Dr. Lee",
+        ],
+    );
+    ok(&db, &["add", "-t", "Not yet", "-s", "+1h", "-R", "15m"]);
+    ok(&db, &["add", "-t", "No reminder", "-s", "+5m"]);
+    ok(&db, &["add", "-t", "Long gone", "--start=-1h", "-R", "5m"]);
+
+    let rows = json(&db, "today", "+2d");
+    let dentist = rows.iter().find(|r| r["title"] == "Dentist").unwrap();
+    assert_eq!(dentist["reminder"], 15);
+
+    let dry = notify(&["--dry-run"]);
+    assert!(dry.starts_with("Dentist\t"), "{dry}");
+    assert!(dry.contains("· Dr. Lee"));
+    assert_eq!(dry.lines().count(), 1);
+    assert!(!log.exists(), "a dry run sends nothing");
+
+    notify(&[]);
+    notify(&[]);
+    let sent = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(sent.lines().count(), 1, "sent once: {sent}");
+    assert!(sent.starts_with("--app-name=vcal|--icon=x-office-calendar|--|Dentist|"));
+    assert_eq!(notify(&["--dry-run"]), "", "already sent");
+
+    // removing the reminder; "" clears it
+    ok(&db, &["edit", due.trim(), "--reminder", ""]);
+    let rows = json(&db, "today", "+2d");
+    let dentist = rows.iter().find(|r| r["title"] == "Dentist").unwrap();
+    assert!(dentist["reminder"].is_null());
+    assert!(
+        !vcal(&db, &["add", "-t", "x", "-s", "+1h", "-R", "30s"])
+            .status
+            .success()
+    );
+}

@@ -103,6 +103,7 @@ pub enum Field {
     AllDay,
     Category,
     Location,
+    Reminder,
     Repeat,
     Notes,
 }
@@ -116,19 +117,21 @@ impl Field {
             Field::AllDay => "All day",
             Field::Category => "Category",
             Field::Location => "Location",
+            Field::Reminder => "Reminder",
             Field::Repeat => "Repeat",
             Field::Notes => "Notes",
         }
     }
 }
 
-const FIELDS: [Field; 8] = [
+const FIELDS: [Field; 9] = [
     Field::Title,
     Field::Start,
     Field::End,
     Field::AllDay,
     Field::Category,
     Field::Location,
+    Field::Reminder,
     Field::Repeat,
     Field::Notes,
 ];
@@ -162,6 +165,7 @@ pub struct Form {
     pub all_day: bool,
     pub category: TextInput,
     pub location: TextInput,
+    pub reminder: TextInput,
     pub repeat: TextInput,
     pub notes: TextInput,
     pub focus: Field,
@@ -187,6 +191,7 @@ impl Form {
             all_day: false,
             category: TextInput::default(),
             location: TextInput::default(),
+            reminder: TextInput::default(),
             repeat: TextInput::default(),
             notes: TextInput::default(),
             focus: Field::Title,
@@ -226,6 +231,7 @@ impl Form {
         f.fill(&ev.title, ev.all_day, ev.start, ev.end, tz);
         f.category = TextInput::new(ev.category.unwrap_or_default());
         f.location = TextInput::new(ev.location.unwrap_or_default());
+        f.reminder = TextInput::new(ev.reminder.map(time::format_minutes).unwrap_or_default());
         f.repeat = TextInput::new(ev.rrule.unwrap_or_default());
         f.notes = TextInput::new(ev.description);
         f
@@ -260,7 +266,7 @@ impl Form {
             .into_iter()
             .filter(|f| {
                 !matches!(self.target, Target::Occurrence { .. })
-                    || !matches!(f, Field::Repeat | Field::AllDay)
+                    || !matches!(f, Field::Repeat | Field::AllDay | Field::Reminder)
             })
             .collect()
     }
@@ -273,6 +279,7 @@ impl Form {
             Field::AllDay => return None,
             Field::Category => &self.category,
             Field::Location => &self.location,
+            Field::Reminder => &self.reminder,
             Field::Repeat => &self.repeat,
             Field::Notes => &self.notes,
         })
@@ -286,6 +293,7 @@ impl Form {
             Field::AllDay => return None,
             Field::Category => &mut self.category,
             Field::Location => &mut self.location,
+            Field::Reminder => &mut self.reminder,
             Field::Repeat => &mut self.repeat,
             Field::Notes => &mut self.notes,
         })
@@ -298,6 +306,7 @@ impl Form {
             Field::End if self.all_day => "last day, inclusive",
             Field::End => "time, or a length like 45m / 1h30m",
             Field::AllDay => "space to toggle",
+            Field::Reminder => "before the start: 10m, 1h, 1d; empty for none",
             Field::Repeat => "RRULE, e.g. FREQ=WEEKLY;BYDAY=MO",
             _ => "",
         }
@@ -404,7 +413,10 @@ impl Form {
             (s, e)
         };
 
+        let reminder = time::parse_reminder(&self.reminder.text)
+            .map_err(|e| anyhow::anyhow!("reminder: {e:#}"))?;
         let apply = |ev: &mut Event| {
+            ev.reminder = reminder;
             ev.title = title.to_string();
             ev.start = start_ts;
             ev.end = end_ts;
@@ -548,6 +560,27 @@ mod tests {
     }
 
     #[test]
+    fn reminder_round_trips() {
+        let s = Settings::default();
+        let mut f = Form::new_timed(3600, 7200, BERLIN);
+        f.title = TextInput::new("Dentist");
+        f.reminder = TextInput::new("1h30m");
+        let Submit::Insert(mut ev) = f.submit(BERLIN, &s, 0).unwrap() else {
+            panic!()
+        };
+        assert_eq!(ev.reminder, Some(90));
+        ev.reminder = Some(1440);
+        assert_eq!(Form::edit_series(ev, BERLIN).reminder.text, "1d");
+        f.reminder = TextInput::new("soon");
+        assert!(
+            f.submit(BERLIN, &s, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("reminder")
+        );
+    }
+
+    #[test]
     fn occurrence_hides_series_fields() {
         let mut ev = Event::new("standup", 0, 1800);
         ev.rrule = Some("FREQ=DAILY".into());
@@ -562,6 +595,7 @@ mod tests {
             end: DAY + 1800,
             all_day: false,
             status: Default::default(),
+            reminder: None,
             modified: false,
         };
         let mut f = Form::edit_occurrence(ev, &occ, Tz::UTC);

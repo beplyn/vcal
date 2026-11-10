@@ -72,6 +72,16 @@ in
       '';
     };
 
+    notify =
+    {
+      enable = lib.mkEnableOption ''
+        desktop notifications for event reminders: a systemd user timer runs
+        `vcal notify` every minute, which calls `notify-send`. Needs a running
+        notification daemon'';
+
+      package = lib.mkPackageOption pkgs "libnotify" { };
+    };
+
     stylix.enable = lib.mkOption
     {
       type = lib.types.bool;
@@ -93,5 +103,39 @@ in
 
     home.packages = [ cfg.package ];
     xdg.configFile."calendar/config.toml".source = toml.generate "vcal-config.toml" generated;
+
+    systemd.user = lib.mkIf cfg.notify.enable
+    {
+      services.vcal-notify =
+      {
+        Unit =
+        {
+          Description = "Send vcal event reminders";
+          After = [ "graphical-session.target" ];
+          PartOf = [ "graphical-session.target" ];
+        };
+        Service =
+        {
+          Type = "oneshot";
+          ExecStart = "${lib.getExe cfg.package} notify";
+          Environment = [ "PATH=${lib.makeBinPath [ cfg.notify.package ]}" ];
+        };
+      };
+
+      timers.vcal-notify =
+      {
+        Unit =
+        {
+          Description = "Check vcal reminders every minute";
+          PartOf = [ "graphical-session.target" ];
+        };
+        Timer =
+        {
+          OnCalendar = "*:*:00";
+          AccuracySec = "5s";
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
+      };
+    };
   };
 }

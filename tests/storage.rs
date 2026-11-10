@@ -398,3 +398,37 @@ fn dropping_the_rule_drops_exceptions() {
     assert!(day_titles(&db, date(2026, 11, 12), BERLIN).is_empty());
     assert_eq!(day_titles(&db, date(2026, 11, 9), BERLIN), ["standup"]);
 }
+
+#[test]
+fn reminders_and_notified_marks() {
+    let mut db = Db::open_in_memory().unwrap();
+    let start = at(BERLIN, 2026, 11, 9, 9);
+    let mut ev = timed("standup", start, 1);
+    ev.reminder = Some(15);
+    let ev = db.insert(ev).unwrap();
+    assert_eq!(db.get(&ev.id).unwrap().unwrap().reminder, Some(15));
+    assert_eq!(db.max_reminder().unwrap(), 15);
+    let occ = &db.occurrences(start, start + 1, BERLIN, false).unwrap()[0];
+    assert_eq!(occ.reminder, Some(15));
+
+    let mut bad = ev.clone();
+    bad.reminder = Some(-5);
+    assert!(db.update(bad).is_err());
+
+    assert!(!db.was_notified(&ev.id, start).unwrap());
+    db.mark_notified(&[(ev.id.clone(), start)], start, 0)
+        .unwrap();
+    assert!(db.was_notified(&ev.id, start).unwrap());
+    // old marks are forgotten
+    db.mark_notified(&[], start, start + 1).unwrap();
+    assert!(!db.was_notified(&ev.id, start).unwrap());
+    // and go with their event
+    db.mark_notified(&[(ev.id.clone(), start)], start, 0)
+        .unwrap();
+    db.delete(&ev.id).unwrap();
+    let n: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM notified", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+}

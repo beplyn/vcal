@@ -69,7 +69,9 @@ Start and end take anything `<when>` accepts (see [cli.md](cli.md#dates-and-time
 e.g. `tomorrow 9:00`. End also takes a length such as `45m`, and when left
 empty uses the default length. For all-day events the end is the last day,
 inclusive. `Repeat` is an RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=MO,WE`.
-Use `Tab`/`S-Tab` to move between fields and `Space` to toggle all day.
+`Reminder` is how long before the start `vcal notify` should alert you
+(`10m`, `1h`, `1d`); leave it empty for none. Use `Tab`/`S-Tab` to move
+between fields and `Space` to toggle all day.
 
 ## Shared with other programs
 

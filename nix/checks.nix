@@ -68,6 +68,15 @@ let
     };
   };
 
+  withNotify = home
+  {
+    programs.vcal =
+    {
+      enable = true;
+      notify.enable = true;
+    };
+  };
+
   # the spec's name for the options
   alias = home { programs.vim-calendar.enable = true; };
 
@@ -90,7 +99,7 @@ in
     man=${vcal}/share/man/man1/vcal.1.gz
     gzip -t "$man"
     zcat "$man" | grep -q '^\.TH vcal 1'
-    for sub in query add edit rm import config; do
+    for sub in query add edit rm next notify import config; do
       zcat "$man" | grep -q "$sub" || { echo "man page lacks $sub"; exit 1; }
     done
 
@@ -123,6 +132,19 @@ in
       grep -qx 'base0A = "#00000a"' "$f"
       grep -qx 'base0D = "#123456"' "$f"
     '';
+
+  hm-notify =
+    let
+      user = withNotify.config.systemd.user;
+      exec = lib.concatStringsSep " " (lib.toList user.services.vcal-notify.Service.ExecStart);
+      off = vanilla.config.systemd.user;
+    in
+    assert lib.assertMsg (lib.hasSuffix "/bin/vcal notify" exec) "unexpected ExecStart: ${exec}";
+    assert lib.assertMsg
+      (user.timers.vcal-notify.Install.WantedBy == [ "graphical-session.target" ])
+      "the reminder timer isn't started with the session";
+    assert lib.assertMsg (!(off.timers ? vcal-notify)) "the reminder timer is on by default";
+    pkgs.runCommandLocal "vcal-hm-notify" { } "touch $out";
 
   hm-alias-and-assertion =
     assert lib.assertMsg (lib.elem vcal alias.config.home.packages) "programs.vim-calendar doesn't alias programs.vcal";

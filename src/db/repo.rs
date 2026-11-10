@@ -11,7 +11,7 @@ use crate::model::{Event, Exception, ExceptionKind, Occurrence, Status};
 use crate::time::{self, DAY};
 
 const EVENT_COLS: &str = "id, title, description, category, location, start_ts, end_ts, \
-                          all_day, tzid, rrule, status, created_ts, updated_ts";
+                          all_day, tzid, rrule, status, created_ts, updated_ts, reminder_minutes";
 const EXCEPTION_COLS: &str =
     "event_id, original_start_ts, kind, title, description, category, location, start_ts, end_ts";
 
@@ -32,6 +32,7 @@ fn event_from_row(r: &Row) -> rusqlite::Result<Event> {
         status: status.parse().unwrap_or_default(),
         created: r.get(11)?,
         updated: r.get(12)?,
+        reminder: r.get(13)?,
     })
 }
 
@@ -83,6 +84,10 @@ fn prepare(ev: &mut Event) -> Result<Option<i64>> {
         .take()
         .map(|c| c.trim().to_string())
         .filter(|c| !c.is_empty());
+    ensure!(
+        ev.reminder.is_none_or(|m| m >= 0),
+        "a reminder can't come after the start"
+    );
     if let Some(rule) = ev.rrule.take().filter(|r| !r.trim().is_empty()) {
         ev.rrule = Some(recurrence::normalize(
             &rule,
@@ -102,14 +107,14 @@ fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> 
          category = excluded.category, location = excluded.location, start_ts = excluded.start_ts,
          end_ts = excluded.end_ts, all_day = excluded.all_day, tzid = excluded.tzid,
          rrule = excluded.rrule, series_end_ts = excluded.series_end_ts, status = excluded.status,
-         updated_ts = excluded.updated_ts"
+         updated_ts = excluded.updated_ts, reminder_minutes = excluded.reminder_minutes"
     } else {
         ""
     };
     conn.execute(
         &format!(
             "INSERT INTO events ({EVENT_COLS}, series_end_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) {conflict}"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) {conflict}"
         ),
         params![
             ev.id,
@@ -125,6 +130,7 @@ fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> 
             ev.status.as_str(),
             ev.created,
             ev.updated,
+            ev.reminder,
             series_end,
         ],
     )
@@ -219,6 +225,7 @@ fn occurrence(
         end: start + ev.duration(),
         all_day: ev.all_day,
         status: ev.status,
+        reminder: ev.reminder,
         modified: false,
     };
     if let Some(x) = exc.filter(|x| x.kind == ExceptionKind::Modified) {
@@ -311,6 +318,49 @@ impl Db {
                 }
             }
             Ok((n_events, n_exc))
+        })
+    }
+
+    /// The longest reminder lead time in minutes, 0 when there are none.
+    pub fn max_reminder(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(reminder_minutes), 0) FROM events",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Whether the reminder for the occurrence of `event_id` starting at
+    /// `start` was already sent.
+    pub fn was_notified(&self, event_id: &str, start: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM notified WHERE event_id = ?1 AND start_ts = ?2",
+                params![event_id, start],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Records sent reminders and forgets ones for occurrences that started
+    /// before `forget_before`.
+    pub fn mark_notified(
+        &mut self,
+        sent: &[(String, i64)],
+        now: i64,
+        forget_before: i64,
+    ) -> Result<()> {
+        self.write(|tx| {
+            for (id, start) in sent {
+                tx.execute(
+                    "INSERT OR IGNORE INTO notified (event_id, start_ts, sent_ts) VALUES (?1, ?2, ?3)",
+                    params![id, start, now],
+                )?;
+            }
+            tx.execute("DELETE FROM notified WHERE start_ts < ?1", [forget_before])?;
+            Ok(())
         })
     }
 
@@ -410,7 +460,7 @@ impl Db {
                 .join(", "),
         ))?;
         let rows = moved.query_map(named_params! { ":lo": lo, ":hi": hi, ":span": span }, |r| {
-            Ok((event_from_row(r)?, exception_from_row(r, 13)?))
+            Ok((event_from_row(r)?, exception_from_row(r, 14)?))
         })?;
         for row in rows {
             let (ev, exc) = row?;

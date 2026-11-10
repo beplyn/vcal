@@ -66,6 +66,8 @@ pub struct Event {
     /// RFC 5545 RRULE value, without the `RRULE:` prefix.
     pub rrule: Option<String>,
     pub status: Status,
+    /// Minutes before the start to notify; `None` for no reminder.
+    pub reminder: Option<i64>,
     pub created: i64,
     pub updated: i64,
 }
@@ -86,6 +88,7 @@ impl Event {
             tzid: None,
             rrule: None,
             status: Status::Confirmed,
+            reminder: None,
             created: now,
             updated: now,
         }
@@ -167,6 +170,8 @@ pub struct Occurrence {
     pub end: i64,
     pub all_day: bool,
     pub status: Status,
+    /// Minutes before the start to notify, from the series.
+    pub reminder: Option<i64>,
     pub modified: bool,
 }
 

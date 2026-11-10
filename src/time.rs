@@ -199,9 +199,50 @@ pub fn parse_duration(input: &str) -> Result<i64> {
     Ok(total)
 }
 
+/// A reminder lead time such as `10m` or `1d`, in whole minutes; empty
+/// means no reminder.
+pub fn parse_reminder(input: &str) -> Result<Option<i64>> {
+    if input.trim().is_empty() {
+        return Ok(None);
+    }
+    let secs = parse_duration(input)?;
+    if secs % 60 != 0 {
+        bail!("reminders are whole minutes, not {input:?}");
+    }
+    Ok(Some(secs / 60))
+}
+
+/// Minutes as the shortest `parse_duration` text: `0m`, `45m`, `1h30m`, `2d`.
+pub fn format_minutes(minutes: i64) -> String {
+    if minutes == 0 {
+        return "0m".into();
+    }
+    let mut out = String::new();
+    let mut left = minutes;
+    for (unit, size) in [("d", 24 * 60), ("h", 60), ("m", 1)] {
+        if left >= size {
+            out.push_str(&format!("{}{unit}", left / size));
+            left %= size;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reminders() {
+        assert_eq!(parse_reminder("").unwrap(), None);
+        assert_eq!(parse_reminder("10").unwrap(), Some(10));
+        assert_eq!(parse_reminder("1h30m").unwrap(), Some(90));
+        assert!(parse_reminder("30s").is_err());
+        for m in [0, 5, 60, 90, 1440, 1505] {
+            assert_eq!(parse_reminder(&format_minutes(m)).unwrap(), Some(m));
+        }
+        assert_eq!(format_minutes(1505), "1d1h5m");
+    }
 
     const BERLIN: Tz = chrono_tz::Europe::Berlin;
 

@@ -30,6 +30,8 @@ The flake ships a module that installs vcal and generates
 | `package` | this flake's `vcal` | Set to `pkgs.vcal` if you use the [overlay](install.md#as-a-flake-input) |
 | `databasePath` | `${config.xdg.dataHome}/calendar/events.db` | Written to `general.database_path`; `$VCAL_DB` and `--db` still override it |
 | `settings` | `{ }` | Any `config.toml` content (see [configuration.md](configuration.md)); wins over everything else |
+| `notify.enable` | `false` | A systemd user timer that runs `vcal notify` every minute (see [cli.md](cli.md#reminders)) |
+| `notify.package` | `pkgs.libnotify` | Provides the `notify-send` it calls |
 | `stylix.enable` | on when Stylix is configured | Fill `[theme]` from the active Stylix scheme |
 
 `programs.vim-calendar` is an alias for `programs.vcal`.
