@@ -1,5 +1,7 @@
-//! RRULE expansion. Timed series expand in their own zone so they keep their
-//! wall-clock time across DST; all-day series expand in UTC over floating dates.
+//! RRULE expansion. Series expand over floating wall-clock times, which are
+//! then placed in the event's zone, so they keep their wall-clock time across
+//! DST. A time a DST change skips moves forward past the gap, as DTSTART does,
+//! rather than dropping the occurrence. All-day series are floating already.
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
@@ -60,24 +62,39 @@ pub fn normalize(rule: &str, all_day: bool, tz: Tz) -> Result<String> {
         .map(|parts| parts.join(";"))
 }
 
-/// The expanded rule set, or `None` for a single event.
+/// The rule set over floating wall-clock times (in `rrule::Tz::UTC`), or
+/// `None` for a single event. [`place`] turns its dates into instants.
 pub fn rule_set(ev: &Event) -> Result<Option<RRuleSet>> {
     let Some(rule) = ev.rrule.as_deref() else {
         return Ok(None);
     };
     let tz = zone(ev);
-    let parsed: RRule<Unvalidated> = rule
+    let mut parsed: RRule<Unvalidated> = rule
         .parse()
         .with_context(|| format!("invalid RRULE {rule:?}"))?;
-    let start = tz
-        .timestamp_opt(ev.start, 0)
-        .single()
-        .ok_or_else(|| anyhow!("start {} out of range", ev.start))?
-        .with_timezone(&rrule::Tz::Tz(tz));
+    if let Some(until) = parsed.get_until() {
+        let until = floating(until.timestamp(), tz)?;
+        parsed = parsed.until(until);
+    }
     let set = parsed
-        .build(start)
+        .build(floating(ev.start, tz)?)
         .with_context(|| format!("invalid RRULE {rule:?}"))?;
     Ok(Some(set))
+}
+
+/// The wall-clock time of `ts` in `tz`, as a floating time.
+fn floating(ts: i64, tz: Tz) -> Result<chrono::DateTime<rrule::Tz>> {
+    let local = tz
+        .timestamp_opt(ts, 0)
+        .single()
+        .ok_or_else(|| anyhow!("{ts} out of range"))?
+        .naive_local();
+    Ok(local.and_utc().with_timezone(&rrule::Tz::UTC))
+}
+
+/// The instant a floating date from [`rule_set`] stands for in `tz`.
+fn place(date: &chrono::DateTime<rrule::Tz>, tz: Tz) -> i64 {
+    time::resolve_local(date.naive_utc(), tz)
 }
 
 /// End of the last occurrence for a bounded series (COUNT/UNTIL); `None` when
@@ -98,7 +115,7 @@ pub fn series_end(ev: &Event) -> Result<Option<i64>> {
         // Too many to enumerate; treat as unbounded rather than cut it short.
         return Ok(None);
     }
-    let last = result.dates.last().map_or(ev.start, |d| d.timestamp());
+    let last = result.dates.last().map_or(ev.start, |d| place(d, zone(ev)));
     Ok(Some(last + ev.duration()))
 }
 
@@ -111,22 +128,21 @@ pub fn starts_between(ev: &Event, lo: i64, hi: i64) -> Result<Vec<i64>> {
             vec![]
         });
     };
-    let tz = rrule::Tz::Tz(zone(ev));
-    let at = |ts: i64| {
-        tz.timestamp_opt(ts, 0)
-            .single()
-            .ok_or_else(|| anyhow!("{ts} out of range"))
-    };
-    let dates = set
-        .after(at(lo)?)
-        .before(at(hi)?)
+    let tz = zone(ev);
+    // Wall-clock and real time differ by the zone offset, under a day; widen
+    // the floating window by that much and cut it exactly once placed.
+    let mut starts: Vec<i64> = set
+        .after(floating(lo.saturating_sub(time::DAY), Tz::UTC)?)
+        .before(floating(hi.saturating_add(time::DAY), Tz::UTC)?)
         .all(MAX_OCCURRENCES)
-        .dates;
-    Ok(dates
+        .dates
         .iter()
-        .map(|d| d.timestamp())
-        .filter(|&s| s < hi)
-        .collect())
+        .map(|d| place(d, tz))
+        .filter(|s| (lo..hi).contains(s))
+        .collect();
+    // Two wall-clock times in one DST gap can land on the same instant.
+    starts.dedup();
+    Ok(starts)
 }
 
 #[cfg(test)]
@@ -179,6 +195,23 @@ mod tests {
             .collect();
         assert_eq!(hours, ["10-19 09:00", "10-26 09:00", "11-02 09:00"]);
         assert_eq!(starts[1] - starts[0], 7 * time::DAY + 3600);
+    }
+
+    #[test]
+    fn skipped_time_moves_past_the_gap() {
+        // São Paulo skipped from 00:00 to 01:00 on 2007-10-14.
+        let sp = chrono_tz::America::Sao_Paulo;
+        let midnight = |d| time::local_midnight(NaiveDate::from_ymd_opt(2007, 10, d).unwrap(), sp);
+        let mut ev = Event::new("x", midnight(12), midnight(12) + 1800);
+        ev.tzid = Some("America/Sao_Paulo".into());
+        ev.rrule = Some("FREQ=DAILY;COUNT=4".into());
+        let starts = starts_between(&ev, midnight(1), midnight(20)).unwrap();
+        let shown: Vec<_> = starts
+            .iter()
+            .map(|&s| time::in_tz(s, sp).format("%d %H:%M").to_string())
+            .collect();
+        assert_eq!(shown, ["12 00:00", "13 00:00", "14 01:00", "15 00:00"]);
+        assert_eq!(series_end(&ev).unwrap(), Some(starts[3] + 1800));
     }
 
     #[test]
