@@ -73,7 +73,8 @@ base0F = "#a16946"
 # Key bindings in Vim notation: "gg", "<C-d>", "<S-Tab>", "<CR>", "<Esc>",
 # "<Space>", "<lt>" for <. An entry replaces all keys of that action in that
 # mode; [] unbinds it. A sequence taken from another action moves to this one.
-# A binding can't be a prefix of another (no "g" next to "gg").
+# A binding can't be a prefix of another (no "g" next to "gg"), and can't
+# start with 1-9: those begin a count, as in 3j or 2w.
 # The defaults are listed commented out.
 
 [keybindings.normal]
@@ -92,9 +93,9 @@ base0F = "#a16946"
 # today = ["t", "."]
 # view_next = ["<Tab>"]
 # view_prev = ["<S-Tab>"]
-# view_month = ["1"]
-# view_week = ["2"]
-# view_day = ["3"]
+# view_month = ["g1"]
+# view_week = ["g2"]
+# view_day = ["g3"]
 # focus = ["<CR>"]
 # new_event = ["o"]
 # new_all_day = ["O"]

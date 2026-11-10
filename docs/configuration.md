@@ -81,7 +81,8 @@ of keys in Vim notation: `"gg"`, `"<C-d>"`, `"<S-Tab>"`, `"<CR>"`,
 - An entry replaces all keys of that action in that mode.
 - `[]` unbinds it.
 - A key sequence taken from another action moves to this one.
-- A binding can't be a prefix of another (no `"g"` next to `"gg"`).
+- A binding can't be a prefix of another (no `"g"` next to `"gg"`), and can't
+  start with `1`–`9`, which begin a count (`3j`).
 
 ```toml
 [keybindings.normal]

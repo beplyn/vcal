@@ -10,13 +10,16 @@ use chrono_tz::Tz;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::form::{Form, Submit, TextInput};
-use super::keymap::{Action, Key, KeyMode, Keymap, Resolved};
+use super::keymap::{self, Action, Key, KeyMode, Keymap, Resolved};
 use super::theme::Theme;
 use crate::config::{self, Config};
 use crate::db::{self, Db};
 use crate::model::{Event, Exception, Occurrence, Status};
 use crate::settings::{Settings, View};
 use crate::time::{self, DAY};
+
+/// Counts are capped so `99999j` can't stall the UI.
+const MAX_COUNT: u32 = 999;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -95,6 +98,8 @@ pub struct App {
     pub mode: Mode,
     pub anchor: Option<Point>,
     pub pending: Vec<Key>,
+    /// A count typed before a command, as in `3j`.
+    pub count: Option<u32>,
     /// The `:` / `/` line.
     pub line: TextInput,
     pub form: Option<Form>,
@@ -145,6 +150,7 @@ impl App {
             mode: Mode::Normal,
             anchor: None,
             pending: Vec::new(),
+            count: None,
             line: TextInput::default(),
             form: None,
             prompt: None,
@@ -544,7 +550,17 @@ impl App {
 
     fn chord(&mut self, key: Key) {
         if self.pending.is_empty() {
-            self.message = None;
+            if self.count.is_none() {
+                self.message = None;
+            }
+            let digit = match key.code {
+                KeyCode::Char(c) if key.mods.is_empty() => c.to_digit(10),
+                _ => None,
+            };
+            if let Some(d) = digit.filter(|_| keymap::starts_count(key) || self.count.is_some()) {
+                self.count = Some((self.count.unwrap_or(0) * 10 + d).min(MAX_COUNT));
+                return;
+            }
         }
         self.pending.push(key);
         let mode = if self.mode == Mode::Visual {
@@ -555,10 +571,41 @@ impl App {
         match self.keymap.resolve(mode, &self.pending) {
             Resolved::Action(action) => {
                 self.pending.clear();
-                self.perform(action);
+                let count = self.count.take().unwrap_or(1);
+                self.perform_counted(action, count);
             }
             Resolved::Pending => {}
-            Resolved::Unbound => self.pending.clear(),
+            Resolved::Unbound => {
+                self.pending.clear();
+                self.count = None;
+            }
+        }
+    }
+
+    /// Runs an action `count` times where that means something (motions,
+    /// `n`/`N`, `>`/`<`); other actions ignore the count.
+    fn perform_counted(&mut self, action: Action, count: u32) {
+        let n = i64::from(count);
+        match action {
+            Action::Left => self.move_days(-n),
+            Action::Right => self.move_days(n),
+            Action::WeekNext => self.move_days(7 * n),
+            Action::WeekPrev => self.move_days(-7 * n),
+            // in one step, so 3} from Jan 31 lands on Apr 30, not Apr 28
+            Action::MonthNext => self.move_months(count as i32),
+            Action::MonthPrev => self.move_months(-(count as i32)),
+            Action::ShiftLater | Action::ShiftEarlier => {
+                self.shift(action == Action::ShiftLater, n)
+            }
+            Action::Down | Action::Up | Action::SearchNext | Action::SearchPrev => {
+                for _ in 0..count {
+                    self.perform(action);
+                    if self.message.as_ref().is_some_and(|m| m.error) {
+                        break;
+                    }
+                }
+            }
+            _ => self.perform(action),
         }
     }
 
@@ -727,7 +774,9 @@ impl App {
                 None => self.info("no event here"),
             },
             Action::Paste => self.paste(),
-            Action::ShiftLater | Action::ShiftEarlier => self.shift(action == Action::ShiftLater),
+            Action::ShiftLater | Action::ShiftEarlier => {
+                self.shift(action == Action::ShiftLater, 1)
+            }
             Action::Search => {
                 self.mode = Mode::Search;
                 self.line = TextInput::default();
@@ -990,13 +1039,13 @@ impl App {
     }
 
     /// `>` / `<` in visual mode: move the selected events (and the
-    /// selection with them) by a day in month view or a slot otherwise.
-    fn shift(&mut self, later: bool) {
+    /// selection with them) by `steps` days in month view, slots otherwise.
+    fn shift(&mut self, later: bool, steps: i64) {
         let list = match self.selected_occurrences() {
             Ok(list) => list,
             Err(e) => return self.error(format!("{e:#}")),
         };
-        let sign = if later { 1 } else { -1 };
+        let sign = if later { steps } else { -steps };
         let month = self.view == View::Month;
         let delta = sign
             * if month {

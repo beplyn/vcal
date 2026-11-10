@@ -29,7 +29,7 @@ currently in effect.
 | `0` `$` | Start / end of the week |
 | `gg` `G` | First / last day of the month (week view: week; day view: first/last slot) |
 | `t` `.` | Today, at the current hour |
-| `Tab` `S-Tab`, `1` `2` `3` | Next / previous view; Month, Week, Day |
+| `Tab` `S-Tab`, `g1` `g2` `g3` | Next / previous view; Month, Week, Day |
 | `Enter` | Focus the day's event list (`j`/`k` pick one); `Enter` again edits it |
 | `o` / `O` | New event at the cursor / new all-day event |
 | `dd` | Delete (asks to confirm; for a repeating event, asks: this occurrence or all) |
@@ -41,7 +41,9 @@ currently in effect.
 | `Esc` `C-[` `C-c` | Back out: list focus, selection, filter |
 | `ZZ` | Quit |
 
-There are no counts (`3j`), because `0`–`3` are taken by other actions.
+A count repeats a motion, as in Vim: `3l`, `2w`, `10j`, `3}`, `2n`. It also
+works for `>`/`<` in visual mode (`v3>`). `0` on its own is still start of the
+week; other actions ignore a count. Counts go up to 999.
 
 ## Visual mode
 

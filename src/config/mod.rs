@@ -210,7 +210,8 @@ pub fn parse(text: &str) -> Result<Config> {
     let conflicts = cfg.keymap.conflicts();
     ensure!(
         conflicts.is_empty(),
-        "[keybindings] a binding can't be a prefix of another: {}",
+        "[keybindings] bindings that could never fire (a prefix of another, or starting \
+         with a count digit): {}",
         conflicts.join("; ")
     );
     Ok(cfg)

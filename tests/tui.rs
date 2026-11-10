@@ -144,22 +144,22 @@ fn view_switching() {
     assert_eq!(a.view, View::Month);
     press(&mut a, "<S-Tab>");
     assert_eq!(a.view, View::Day);
-    press(&mut a, "2");
+    press(&mut a, "g2");
     assert_eq!(a.view, View::Week);
-    press(&mut a, "1");
+    press(&mut a, "g1");
     assert_eq!(a.view, View::Month);
 }
 
 #[test]
 fn week_view_slots_and_today() {
     let mut a = app();
-    press(&mut a, "2");
+    press(&mut a, "g2");
     assert_eq!(a.slot, 20, "10:00 is slot 20 at 30 minutes");
     press(&mut a, "jjj");
     assert_eq!(a.slot, 23);
     press(&mut a, "l");
     assert_eq!((a.cursor, a.slot), (date(2026, 11, 10), 23));
-    press(&mut a, "3G");
+    press(&mut a, "g3G");
     assert_eq!(a.slot, 47);
     press(&mut a, "gg");
     assert_eq!(a.slot, 0);
@@ -172,7 +172,7 @@ fn week_view_slots_and_today() {
 #[test]
 fn create_event_with_o() {
     let mut a = app();
-    press(&mut a, "2jj"); // week view, 11:00
+    press(&mut a, "g2jj"); // week view, 11:00
     press(&mut a, "o");
     assert_eq!(a.mode, Mode::Insert);
     press(&mut a, "Lunch<Tab><Tab><C-u>45m<Tab><Tab>food<CR>");
@@ -320,7 +320,7 @@ fn yank_and_paste() {
     );
 
     // week view pastes at the cursor slot
-    press(&mut a, "2lp");
+    press(&mut a, "g2lp");
     let pasted =
         a.db.occurrences(
             at(date(2026, 11, 17), 0, 0),
@@ -366,7 +366,7 @@ fn visual_month_delete_and_new() {
 fn visual_week_shift() {
     let mut a = app();
     let ev = add(&mut a, "Focus", at(date(2026, 11, 9), 10, 0), 60);
-    press(&mut a, "2vj>>");
+    press(&mut a, "g2vj>>");
     let got = a.db.get(&ev.id).unwrap().unwrap();
     assert_eq!(got.start, at(date(2026, 11, 9), 11, 0), "two slots later");
     assert_eq!(a.slot, 23, "the selection follows");
@@ -471,7 +471,7 @@ fn renders_month() {
 fn renders_week_blocks_on_the_right_rows() {
     let mut a = app();
     add(&mut a, "Planning", at(date(2026, 11, 11), 13, 0), 90);
-    press(&mut a, "2");
+    press(&mut a, "g2");
     let s = screen(&mut a, 120, 40);
     assert!(s.contains("Week 46"), "{s}");
     let lines: Vec<&str> = s.lines().collect();
@@ -501,7 +501,7 @@ fn renders_day_agenda() {
     ev.location = Some("Room 4".into());
     a.db.insert(ev).unwrap();
     a.reload();
-    press(&mut a, "3");
+    press(&mut a, "g3");
     let s = screen(&mut a, 120, 40);
     assert!(s.contains("Monday 9 November 2026"), "{s}");
     assert!(s.contains("13:00–14:30"));
@@ -644,7 +644,7 @@ mod config_reload {
     fn slot_granularity_change_keeps_the_time() {
         let dir = tempfile::tempdir().unwrap();
         let (mut a, path) = watched(dir.path(), "");
-        press(&mut a, "2");
+        press(&mut a, "g2");
         assert_eq!(a.slot, 20, "10:00 at 30 minutes");
         std::fs::write(&path, "[views]\nslot_minutes = 15\n").unwrap();
         a.tick(a.now);
@@ -672,4 +672,57 @@ mod config_reload {
                 .contains("take effect when vcal restarts")
         );
     }
+}
+
+#[test]
+fn counts_repeat_motions() {
+    let mut a = app();
+    press(&mut a, "3l");
+    assert_eq!(a.cursor, date(2026, 11, 12));
+    press(&mut a, "2w");
+    assert_eq!(a.cursor, date(2026, 11, 26));
+    press(&mut a, "10h");
+    assert_eq!(a.cursor, date(2026, 11, 16), "0 continues a count");
+    press(&mut a, "0");
+    assert_eq!(a.cursor, date(2026, 11, 16), "0 alone is still row_start");
+    press(&mut a, "2j");
+    assert_eq!(a.cursor, date(2026, 11, 30));
+    press(&mut a, "2k");
+    assert_eq!(a.cursor, date(2026, 11, 16));
+
+    a.goto_date(date(2027, 1, 31));
+    press(&mut a, "3}");
+    assert_eq!(a.cursor, date(2027, 4, 30), "one jump, not three clamps");
+    press(&mut a, "2{");
+    assert_eq!(a.cursor, date(2027, 2, 28));
+
+    // a count shows while it's typed and goes with Esc or a dead key
+    press(&mut a, "12");
+    assert_eq!(a.count, Some(12));
+    assert!(screen(&mut a, 100, 30).contains("NORMAL  12"));
+    press(&mut a, "<Esc>l");
+    assert_eq!(a.cursor, date(2027, 3, 1));
+    press(&mut a, "5xl");
+    assert_eq!(a.cursor, date(2027, 3, 2));
+    // and is ignored by actions that don't repeat
+    press(&mut a, "3g2");
+    assert_eq!(a.view, View::Week);
+    assert_eq!(a.count, None);
+}
+
+#[test]
+fn counts_in_week_view_and_visual() {
+    let mut a = app();
+    let ev = add(&mut a, "Focus", at(date(2026, 11, 9), 10, 0), 60);
+    press(&mut a, "g2");
+    let slot = a.slot;
+    press(&mut a, "4j");
+    assert_eq!(a.slot, slot + 4);
+    press(&mut a, "4kv3>");
+    assert_eq!(
+        a.db.get(&ev.id).unwrap().unwrap().start,
+        at(date(2026, 11, 9), 11, 30),
+        "three slots in one write"
+    );
+    assert_eq!(a.slot, slot + 3);
 }

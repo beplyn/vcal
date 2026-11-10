@@ -191,8 +191,14 @@ fn render_status(buf: &mut Buffer, area: Rect, app: &App) {
     if let Some(f) = &app.filter {
         spans.push(Span::styled(format!("/{f} "), Style::new().fg(t.tag())));
     }
-    if !app.pending.is_empty() {
-        let keys: String = app.pending.iter().map(|k| k.to_string()).collect();
+    if !app.pending.is_empty() || app.count.is_some() {
+        let count = app.count.map(|n| n.to_string()).unwrap_or_default();
+        let keys: String = count
+            + &app
+                .pending
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<String>();
         spans.push(Span::styled(keys, t.text().add_modifier(Modifier::BOLD)));
     }
     Paragraph::new(Line::from(spans)).render(area, buf);

@@ -247,6 +247,12 @@ pub struct Keymap {
     pub visual: Vec<Binding>,
 }
 
+/// Whether a key pressed with no count pending starts one. `0` doesn't: it
+/// is `row_start` until a count has begun.
+pub fn starts_count(key: Key) -> bool {
+    matches!(key.code, KeyCode::Char('1'..='9')) && key.mods.is_empty()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolved {
     Action(Action),
@@ -281,9 +287,9 @@ const MOVEMENT: &[(&str, Action)] = &[
 const NORMAL: &[(&str, Action)] = &[
     ("<Tab>", Action::ViewNext),
     ("<S-Tab>", Action::ViewPrev),
-    ("1", Action::ViewMonth),
-    ("2", Action::ViewWeek),
-    ("3", Action::ViewDay),
+    ("g1", Action::ViewMonth),
+    ("g2", Action::ViewWeek),
+    ("g3", Action::ViewDay),
     ("<CR>", Action::Focus),
     ("o", Action::NewEvent),
     ("O", Action::NewAllDay),
@@ -377,16 +383,23 @@ impl Keymap {
         list.extend(sequences.into_iter().map(|keys| Binding { keys, action }));
     }
 
-    /// Bindings that are a strict prefix of another in the same mode: the
-    /// longer one could never fire without a timeout.
+    /// Bindings that could never fire: a strict prefix of another in the same
+    /// mode (the longer one would need a timeout), or one starting with
+    /// `1`-`9`, which begins a count.
     pub fn conflicts(&self) -> Vec<String> {
         let mut out = Vec::new();
+        let show = |b: &Binding| b.keys.iter().map(Key::to_string).collect::<String>();
         for (mode, list) in [("normal", &self.normal), ("visual", &self.visual)] {
+            for b in list.iter().filter(|b| starts_count(b.keys[0])) {
+                out.push(format!(
+                    "{mode}: \"{}\" ({}) starts with a count digit",
+                    show(b),
+                    b.action.name()
+                ));
+            }
             for short in list {
                 for long in list {
                     if short.keys.len() < long.keys.len() && long.keys.starts_with(&short.keys) {
-                        let show =
-                            |b: &Binding| b.keys.iter().map(Key::to_string).collect::<String>();
                         out.push(format!(
                             "{mode}: \"{}\" ({}) hides \"{}\" ({})",
                             show(short),
@@ -502,9 +515,25 @@ mod tests {
         assert!(km.keys_for(KeyMode::Normal, Action::Help).is_empty());
         km.rebind(KeyMode::Normal, Action::Paste, vec![keys("g")]);
         assert_eq!(
-            km.conflicts(),
-            ["normal: \"g\" (paste) hides \"gg\" (viewport_first)"]
+            km.conflicts()[0],
+            "normal: \"g\" (paste) hides \"gg\" (viewport_first)"
         );
+    }
+
+    #[test]
+    fn digits_are_counts() {
+        let mut km = Keymap::default();
+        km.rebind(
+            KeyMode::Visual,
+            Action::ViewMonth,
+            vec![parse_keys("1").unwrap()],
+        );
+        assert_eq!(
+            km.conflicts(),
+            ["visual: \"1\" (view_month) starts with a count digit"]
+        );
+        // 0 is row_start until a count has begun
+        assert!(!starts_count(Key::char('0')));
     }
 
     #[test]
