@@ -83,6 +83,14 @@ vcal query --from now --to +1d --format json | jq -r '.[0].title // empty'
 the same file updates events in place. The file wins for the events it
 contains: their cancelled and moved occurrences are replaced by the file's.
 
+Time zones can be IANA names (`Europe/Berlin`), Windows names from Outlook
+and Exchange (`W. Europe Standard Time`), Outlook display names
+(`(UTC+01:00) Amsterdam, Berlin, …`), path-prefixed names
+(`/mozilla.org/…/Europe/Berlin`), or custom names that the file describes in a
+`VTIMEZONE`. When vcal has to guess a zone from a `VTIMEZONE`'s offsets, or
+can't place it at all and falls back to local time, it prints a warning that
+names the zone.
+
 ## Status bars: `vcal next`
 
 `vcal next` prints the next timed event in the coming week, or nothing (with

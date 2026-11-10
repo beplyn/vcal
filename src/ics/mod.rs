@@ -1,14 +1,18 @@
 //! A small iCalendar (RFC 5545) reader for `vcal import`: VEVENTs with
 //! SUMMARY, DESCRIPTION, LOCATION, CATEGORIES, STATUS, DTSTART, DTEND or
 //! DURATION, RRULE, EXDATE, RECURRENCE-ID overrides, and the first VALARM
-//! with a TRIGGER relative to the start, as the reminder. TZIDs must be IANA
-//! names; anything else is read in the local zone.
+//! with a TRIGGER relative to the start, as the reminder. TZIDs can be IANA,
+//! Windows or Outlook names, or described by a VTIMEZONE (see [`zones`]);
+//! one that can't be placed is read in the local zone, with a warning.
+
+mod zones;
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use chrono_tz::Tz;
+use zones::{Part, VTimezone, Zones};
 
 use crate::model::{Event, Exception, Status};
 use crate::time::{self, DAY};
@@ -125,7 +129,7 @@ fn split_list(s: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_stamp(value: &str, params: &HashMap<String, String>, local: Tz) -> Result<Stamp> {
+fn parse_stamp(value: &str, params: &HashMap<String, String>, zones: &Zones) -> Result<Stamp> {
     let v = value.trim();
     if params
         .get("VALUE")
@@ -141,10 +145,10 @@ fn parse_stamp(value: &str, params: &HashMap<String, String>, local: Tz) -> Resu
             .with_context(|| format!("bad date-time {v:?}"))?;
         return Ok(Stamp::At(naive.and_utc().timestamp(), None));
     }
-    let tz = params.get("TZID").and_then(|z| z.parse::<Tz>().ok());
+    let tz = params.get("TZID").map(|z| zones.get(z));
     let naive = NaiveDateTime::parse_from_str(v, "%Y%m%dT%H%M%S")
         .with_context(|| format!("bad date-time {v:?}"))?;
-    let zone = tz.unwrap_or(local);
+    let zone = tz.unwrap_or(zones.local);
     Ok(Stamp::At(time::resolve_local(naive, zone), Some(zone)))
 }
 
@@ -190,14 +194,14 @@ pub fn parse(input: &str, local: Tz) -> Result<Parsed> {
     if !input.to_ascii_uppercase().contains("BEGIN:VCALENDAR") {
         bail!("not an iCalendar file (no BEGIN:VCALENDAR)");
     }
+    let props: Vec<Prop> = unfold(input).iter().filter_map(|l| parse_prop(l)).collect();
+    let year = time::local_date(time::now(), local).year();
+    let zones = Zones::new(local, vtimezones(&props), year);
     let mut parsed = Parsed::default();
     let mut stack: Vec<String> = Vec::new();
     let mut current: Option<Vec<Prop>> = None;
     let mut reminder: Option<i64> = None;
-    for line in unfold(input) {
-        let Some(prop) = parse_prop(&line) else {
-            continue;
-        };
+    for prop in props {
         match prop.name.as_str() {
             "BEGIN" => {
                 let comp = prop.value.trim().to_ascii_uppercase();
@@ -210,7 +214,7 @@ pub fn parse(input: &str, local: Tz) -> Result<Parsed> {
             "END" => {
                 if stack.pop().as_deref() == Some("VEVENT")
                     && let Some(props) = current.take()
-                    && let Err(err) = vevent(props, reminder.take(), local, &mut parsed)
+                    && let Err(err) = vevent(props, reminder.take(), &zones, &mut parsed)
                 {
                     parsed.warnings.push(format!("skipped an event: {err:#}"));
                 }
@@ -231,7 +235,77 @@ pub fn parse(input: &str, local: Tz) -> Result<Parsed> {
             _ => {}
         }
     }
+    parsed.warnings.extend(zones.warnings.take());
     Ok(parsed)
+}
+
+/// The VTIMEZONEs of a file by TZID, for names that aren't IANA ones.
+fn vtimezones(props: &[Prop]) -> HashMap<String, VTimezone> {
+    let mut out = HashMap::new();
+    let mut zone: Option<(Option<String>, VTimezone)> = None;
+    // the STANDARD or DAYLIGHT part being read: (daylight?, offset, month, since)
+    type Reading = (bool, Option<i32>, Option<u32>, Option<NaiveDate>);
+    let mut part: Option<Reading> = None;
+    for p in props {
+        let value = p.value.trim();
+        match (p.name.as_str(), value.to_ascii_uppercase().as_str()) {
+            ("BEGIN", "VTIMEZONE") => zone = Some((None, VTimezone::default())),
+            ("END", "VTIMEZONE") => {
+                if let Some((Some(id), vtz)) = zone.take() {
+                    out.insert(id, vtz);
+                }
+            }
+            ("BEGIN", kind @ ("STANDARD" | "DAYLIGHT")) if zone.is_some() => {
+                part = Some((kind == "DAYLIGHT", None, None, None));
+            }
+            ("END", "STANDARD" | "DAYLIGHT") => {
+                let (Some((daylight, Some(offset), month, Some(since))), Some((_, vtz))) =
+                    (part.take(), zone.as_mut())
+                else {
+                    continue;
+                };
+                let new = Part {
+                    offset,
+                    month: month.unwrap_or(since.month()),
+                    since,
+                };
+                let slot = if daylight {
+                    &mut vtz.daylight
+                } else {
+                    &mut vtz.standard
+                };
+                if slot.is_none_or(|old| old.since <= since) {
+                    *slot = Some(new);
+                }
+            }
+            _ => match (&mut part, &mut zone) {
+                (Some((_, offset, month, since)), Some(_)) => match p.name.as_str() {
+                    "TZOFFSETTO" => *offset = zones::parse_offset(value),
+                    "DTSTART" => {
+                        *since = value
+                            .get(..8)
+                            .and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok());
+                    }
+                    "RRULE" => {
+                        *month = value.split(';').find_map(|kv| {
+                            let (k, v) = kv.split_once('=')?;
+                            k.eq_ignore_ascii_case("BYMONTH")
+                                .then(|| v.split(',').next()?.parse().ok())
+                                .flatten()
+                        });
+                    }
+                    _ => {}
+                },
+                (None, Some((id, vtz))) => match p.name.as_str() {
+                    "TZID" => *id = Some(value.to_string()),
+                    "X-LIC-LOCATION" => vtz.lic_location = Some(value.to_string()),
+                    _ => {}
+                },
+                _ => {}
+            },
+        }
+    }
+    out
 }
 
 /// Minutes before the start for a TRIGGER relative to it (`-PT15M`); `None`
@@ -252,7 +326,12 @@ fn trigger_minutes(prop: &Prop) -> Option<i64> {
     (secs <= 0).then_some(-secs / 60)
 }
 
-fn vevent(props: Vec<Prop>, reminder: Option<i64>, local: Tz, parsed: &mut Parsed) -> Result<()> {
+fn vevent(
+    props: Vec<Prop>,
+    reminder: Option<i64>,
+    zones: &Zones,
+    parsed: &mut Parsed,
+) -> Result<()> {
     let one = |name: &str| props.iter().find(|p| p.name == name);
     let text = |name: &str| {
         one(name)
@@ -261,10 +340,10 @@ fn vevent(props: Vec<Prop>, reminder: Option<i64>, local: Tz, parsed: &mut Parse
     };
 
     let dtstart = one("DTSTART").ok_or_else(|| anyhow!("no DTSTART"))?;
-    let start = parse_stamp(&dtstart.value, &dtstart.params, local)?;
+    let start = parse_stamp(&dtstart.value, &dtstart.params, zones)?;
     let all_day = matches!(start, Stamp::Day(_));
     let end = match (one("DTEND"), one("DURATION")) {
-        (Some(p), _) => parse_stamp(&p.value, &p.params, local)?.ts(),
+        (Some(p), _) => parse_stamp(&p.value, &p.params, zones)?.ts(),
         (None, Some(p)) => start.ts() + parse_ics_duration(&p.value)?,
         // RFC 5545: a date lasts one day, a date-time is instantaneous
         (None, None) => start.ts() + if all_day { DAY } else { 0 },
@@ -277,7 +356,7 @@ fn vevent(props: Vec<Prop>, reminder: Option<i64>, local: Tz, parsed: &mut Parse
 
     if let Some(rid) = one("RECURRENCE-ID") {
         let uid = uid.ok_or_else(|| anyhow!("override without UID"))?;
-        let original = parse_stamp(&rid.value, &rid.params, local)?.ts();
+        let original = parse_stamp(&rid.value, &rid.params, zones)?.ts();
         let mut exc = if status == Status::Cancelled {
             Exception::cancelled(uid, original)
         } else {
@@ -314,13 +393,13 @@ fn vevent(props: Vec<Prop>, reminder: Option<i64>, local: Tz, parsed: &mut Parse
     }
     ev.end = ev.end.max(ev.start);
     if let Stamp::At(_, zone) = start {
-        ev.tzid = Some(zone.unwrap_or(local).name().to_string());
+        ev.tzid = Some(zone.unwrap_or(zones.local).name().to_string());
     }
     ev.rrule = one("RRULE").map(|p| p.value.clone());
 
     for p in props.iter().filter(|p| p.name == "EXDATE") {
         for value in p.value.split(',') {
-            let original = parse_stamp(value, &p.params, local)?.ts();
+            let original = parse_stamp(value, &p.params, zones)?.ts();
             parsed
                 .exceptions
                 .push(Exception::cancelled(ev.id.clone(), original));
@@ -382,6 +461,43 @@ DTEND;VALUE=DATE:20261123\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(parse_ics_duration("P1W").unwrap(), 7 * DAY);
         assert_eq!(parse_ics_duration("-P1DT2H").unwrap(), -(DAY + 7200));
         assert!(parse_ics_duration("1H").is_err());
+    }
+
+    #[test]
+    fn outlook_zones() {
+        let berlin = chrono_tz::Europe::Berlin;
+        let nine = time::resolve_local(
+            NaiveDate::from_ymd_opt(2026, 11, 12)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+            berlin,
+        );
+        let file = "BEGIN:VCALENDAR\r\n\
+BEGIN:VTIMEZONE\r\nTZID:Custom Zone\r\n\
+BEGIN:STANDARD\r\nDTSTART:16011028T030000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\n\
+TZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\n\
+BEGIN:DAYLIGHT\r\nDTSTART:16010325T020000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\n\
+TZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\n\
+BEGIN:VEVENT\r\nUID:a\r\nSUMMARY:Windows\r\n\
+DTSTART;TZID=W. Europe Standard Time:20261112T090000\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:b\r\nSUMMARY:Custom\r\n\
+DTSTART;TZID=Custom Zone:20261112T090000\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:c\r\nSUMMARY:Nowhere\r\n\
+DTSTART;TZID=Nowhere Time:20261112T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let p = parse(file, berlin).unwrap();
+        assert_eq!(p.events[0].start, nine);
+        assert_eq!(p.events[0].tzid.as_deref(), Some("Europe/Berlin"));
+        // a zone with CET's offsets, whichever it is
+        assert_eq!(p.events[1].start, nine);
+        assert_eq!(p.warnings.len(), 2, "{:?}", p.warnings);
+        assert!(
+            p.warnings[0].contains("\"Custom Zone\""),
+            "{:?}",
+            p.warnings
+        );
+        assert!(p.warnings[1].contains("read as local time"));
+        assert_eq!(p.events[2].start, nine);
     }
 
     #[test]
