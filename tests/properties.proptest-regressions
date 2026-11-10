@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2fbd72902e16223ace76d90b2f82a7b9f06e1e5616c98825b2ae2993f1034817 # shrinks to ev = Event { id: "01a1c6c8-22ea-75d4-a49f-e2b5c8fca63f", title: "0", description: "", category: None, location: None, start: 1743797880, end: 1743861600, all_day: false, tzid: Some("Pacific/Chatham"), rrule: None, status: Confirmed, reminder: None, calendar: None, created: 1794336367, updated: 1794336367 }, local = Europe/Berlin
+cc 88993e3abbb5bc8146c41617c672e882a9a0a0f8cfec9a25453ae4e5182279c6 # shrinks to tz = America/Sao_Paulo, (date, h, m) = (2007-08-03, 0, 0), weekly = false, count = 73

@@ -69,8 +69,21 @@ impl Form {
         }
     }
 
-    /// `NAME;PARAMS:value` for a stamp.
+    /// `NAME;PARAMS:value` for a stamp. A zoned time a reader would place
+    /// elsewhere — the second pass through an hour the clocks repeat, read as
+    /// the first — is written in UTC instead.
     fn prop(self, name: &str, ts: i64) -> String {
+        match self {
+            Form::Zoned(tz) if time::resolve_local(time::in_tz(ts, tz).naive_local(), tz) != ts => {
+                Form::Utc.prop(name, ts)
+            }
+            form => form.prop_as_is(name, ts),
+        }
+    }
+
+    /// [`Form::prop`] without the UTC fallback, for a series' DTSTART, whose
+    /// zone decides how it repeats.
+    fn prop_as_is(self, name: &str, ts: i64) -> String {
         match self {
             Form::Date => format!(
                 "{name};VALUE=DATE:{}",
@@ -106,7 +119,11 @@ fn vevent(out: &mut String, ev: &Event, body: &Body, recurrence_id: Option<i64>,
     if let Some(rid) = recurrence_id {
         line(out, &form.prop("RECURRENCE-ID", rid));
     }
-    line(out, &form.prop("DTSTART", body.start));
+    if ev.rrule.is_some() && recurrence_id.is_none() {
+        line(out, &form.prop_as_is("DTSTART", body.start));
+    } else {
+        line(out, &form.prop("DTSTART", body.start));
+    }
     line(out, &form.prop("DTEND", body.end));
     line(out, &format!("SUMMARY:{}", escape(body.title)));
     if !body.description.is_empty() {
