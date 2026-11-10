@@ -24,7 +24,12 @@ A good pattern for widgets:
 2. On a change to `events.db.changed`, wait ~150 ms (writes can come in
    bursts) and query again. Also re-query at midnight.
 3. Write with `vcal add` / `edit` / `rm`, one call at a time, using the
-   `id` and `occurrence` from the JSON.
+   `id` and `occurrence` from the JSON. For a row with `"recurring": true`,
+   pass `--occurrence <occurrence>` to touch only that date. Leave it out
+   to change the whole series, or with `rm` to delete every occurrence.
+4. For a status bar, `vcal next --waybar` (see
+   [cli.md](cli.md#status-bars-vcal-next)) needs no change watching: poll
+   it every minute.
 
 ## Opening the TUI from a widget
 
@@ -40,5 +45,7 @@ wezterm start -- vcal --date tomorrow
 The author's [dotfiles](https://github.com/beplyn/dotfiles)
 (`modules/home/desktop/calendar.nix`) follow this pattern in Quickshell: a
 dashboard month view with event dots and an agenda, where clicking adds,
-edits and deletes events, plus a waybar clock that opens the TUI. It's a
-working example to adapt, not part of this repository.
+edits and deletes events, plus a waybar clock that opens the TUI. For a
+repeating event the editor has a "This one / All" switch for edits, and
+deleting offers both "Delete this one" and "Delete all". It's a working
+example to adapt, not part of this repository.

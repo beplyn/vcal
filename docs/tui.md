@@ -26,14 +26,14 @@ currently in effect.
 | `h` `j` `k` `l` / arrows | Move a day; `j`/`k` move a week in month view, a time slot in week/day, and to the next or previous event in the agenda |
 | `w` `b` | Forward / back a week |
 | `}` `{` | Forward / back a month |
-| `0` `$` | Start / end of the week |
+| `0` `$`, `Home` `End` | Start / end of the week |
 | `gg` `G` | First / last day of the month (week view: week; day view: first/last slot; agenda: first/last event shown) |
 | `t` `.` | Today, at the current hour |
 | `Tab` `S-Tab`, `g1` `g2` `g3` `g4` | Next / previous view; Month, Week, Day, Agenda |
 | `Enter` | Focus the day's event list (`j`/`k` pick one); `Enter` again edits it |
 | `o` / `O` | New event at the cursor / new all-day event |
-| `dd` | Delete (asks to confirm; for a repeating event, asks: this occurrence or all) |
-| `cc` | Edit (same choice for repeating events) |
+| `dd` | Delete (asks to confirm). For a repeating event it first asks: `o` this occurrence, or `a` every occurrence (the whole series) |
+| `cc` | Edit (the same `o` / `a` choice for repeating events) |
 | `yy` / `p` | Copy the event / paste a copy at the cursor |
 | `u` / `C-r` | Undo / redo the last change made in this window (up to 100; counts work: `3u`). Undo refuses if the events changed elsewhere since |
 | `J` / `K` | Move the event under the cursor a slot later / earlier (a day in month and agenda views, and for all-day events). A repeating event moves just this occurrence |
@@ -48,6 +48,32 @@ A count repeats a motion, as in Vim: `3l`, `2w`, `10j`, `3}`, `2n`. It also
 works for `>`/`<` in visual mode (`v3>`). `0` on its own is still start of the
 week; other actions ignore a count. Counts go up to 999.
 
+## Repeating events
+
+Deleting or editing an occurrence of a repeating event asks which ones you
+mean:
+
+| Key | `dd` | `cc` |
+|---|---|---|
+| `o` | Cancel just this occurrence; the rest of the series stays | Change just this occurrence (title, times, notes, …) |
+| `a` (or `s`) | Delete the event with every occurrence | Change the series itself, including its repeat rule |
+| `Esc` | Keep everything | Keep everything |
+
+`J`/`K` and `>`/`<` always change just the occurrence under the cursor.
+Cancelled and changed occurrences are kept with the series, so `vcal show
+<id>` lists them and export writes them as EXDATE and RECURRENCE-ID. `u`
+undoes either kind of delete.
+
+## Reading the views
+
+- Events are drawn in the `event` colour, *italic* when tentative, struck
+  through when cancelled, dimmed once past, and in the `urgent` colour when
+  they start within the hour.
+- `↻` marks a repeating event.
+- In month view, dots show how many events a day has, and `★` marks a day
+  with an event in the category `holiday`.
+- Week and day views draw a line at the current time. Day view shows the
+  day's events in detail next to the timeline.
 
 ## The agenda
 
@@ -56,22 +82,30 @@ with the cursor's week. Each day that has events gets a heading, and so do
 today and the cursor's day. `j`/`k` step from event to event across days. At
 either end they look up to a year further, so `j` always reaches the next
 event. `Enter` edits the highlighted event, and `o`, `dd`, `cc`, `yy`, `p`
-and `/` work as in the other views. On a wide terminal, the right-hand pane
-shows the cursor day's events in detail.
+and `/` work as in the other views. On a terminal at least 100 columns
+wide, the right-hand pane shows the cursor day's events in detail.
+
 ## Visual mode
 
 Movement keys work as in Normal mode. `d`/`x` deletes the selected events,
 `y` copies them, `>` / `<` moves them a day (month view, agenda) or a slot (week/day
-view), and `o` creates an event spanning the selection.
+view), and `o` creates an event spanning the selection. Month view and the
+agenda select whole days, all-day events included; week and day views select
+a time range, so only timed events that start inside it.
+
+When the selection includes occurrences of repeating events, `d` asks first:
+`o` cancels just the selected occurrences, `a` deletes every occurrence of
+each repeating event in it. Events that don't repeat are deleted either way.
 
 ## Commands
 
 | Command | |
 |---|---|
 | `:q` `:wq` `:x` | Quit. Everything is saved as you go, so `:w` is a no-op |
-| `:jump <when>`, or just `:2026-12-24` | Go to a date |
+| `:jump <when>`, `:j`, or just `:2026-12-24` / `:tomorrow` | Go to a date (and, for a time, that slot) |
 | `:today` | Go to today |
-| `:view month\|week\|day\|agenda` | Switch view |
+| `:view month\|week\|day\|agenda`, or `:month` … `:agenda` | Switch view |
+| `:help`, `:h` | All key bindings, as `?` |
 | `:import <file.ics>` | Import an iCalendar file |
 | `:add <words>`, `:a` | Create an event from one line: `:add Dentist tomorrow 14:00 45m @health` ([quick add](#quick-add)) |
 | `:export <file.ics>`, `:w <file.ics>` | Write every event to an iCalendar file |

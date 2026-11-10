@@ -12,8 +12,8 @@ Without `XDG_*` set these fall back to `~/.local/share` and `~/.config`.
 Overrides are listed strongest first.
 
 The database is plain SQLite in WAL mode, so readers never block the TUI.
-Back it up by copying `events.db` while vcal isn't writing, or with
-`sqlite3 events.db ".backup backup.db"` at any time.
+Back it up with `vcal backup`, which is safe while vcal is running (see
+[cli.md](cli.md#maintenance-vcal-doctor-and-vcal-backup)), and check it with `vcal doctor`.
 
 ## config.toml
 
@@ -65,7 +65,7 @@ colours in.
 | `today` | `base0A` | Today, current-time line |
 | `event` | `base0B` | Events, success messages |
 | `accent` | `base0D` | Selected day, active tab, focused event |
-| `tag` | `base0E` | Categories, recurring marks |
+| `tag` | `base0E` | Categories, recurring marks (`↻`), holidays (`★`), the repeating-event prompt |
 
 ```toml
 [theme.roles]

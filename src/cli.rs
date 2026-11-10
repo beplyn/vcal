@@ -58,7 +58,7 @@ enum Command {
     Add(AddArgs),
     /// Change an event, or one occurrence of a recurring event, and print its id
     Edit(EditArgs),
-    /// Delete an event, or one occurrence of a recurring event
+    /// Delete an event (every occurrence, if it repeats), or with --occurrence just one
     Rm(RmArgs),
     /// Print one event in full: times, recurrence, changed and cancelled
     /// occurrences, and the next few occurrences

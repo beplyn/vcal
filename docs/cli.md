@@ -39,9 +39,12 @@ vcal edit <id> --all-day --end 2026-11-12
 vcal edit <id> --occurrence <ts> --title "Standup (remote)"
 vcal edit <id> --rrule ""                           # stop repeating
 vcal edit <id> --reminder ""                        # no reminder
+vcal edit <id> --timed --start "tomorrow 10:00"     # all-day → timed
+vcal edit <id> --status tentative                   # confirmed, tentative or cancelled
 
-# delete an event, or cancel one occurrence of a repeating event
+# delete an event; for a repeating event that is every occurrence
 vcal rm <id>
+# or cancel just one occurrence (the `occurrence` value from `query`)
 vcal rm <id> --occurrence <ts>
 
 vcal import calendar.ics                            # or - for stdin
@@ -50,6 +53,7 @@ vcal calendars                                      # the configured calendars a
 vcal export backup.ics                              # or to stdout; -c work, --id <id> to filter
 
 vcal show <id>                                      # one event in full: recurrence, exceptions, next dates
+vcal show <id> --json --upcoming 10                 # the same as JSON, with ten upcoming dates
 vcal next                                           # "14:00 Dentist", for a status bar
 vcal notify                                         # send reminders that are due
 
@@ -58,8 +62,25 @@ vcal config default    # the documented default config
 vcal config check      # validate it without starting the TUI
 ```
 
-Every command takes `--db <path>` and `--config <path>`; see
-[configuration.md](configuration.md#files).
+Every command takes `--db <path>` and `--config <path>` (or `$VCAL_DB` and
+`$VCAL_CONFIG`); see [configuration.md](configuration.md#files). With no
+command, `vcal` starts the TUI; `--view month|week|day|agenda` and
+`--date <when>` pick where it opens.
+
+A few details the examples leave out:
+
+- `add` and `edit` take `--status confirmed|tentative|cancelled` and
+  `--calendar <name>` (see [sync.md](sync.md#caldav-and-nextcloud-caldav)).
+- `edit` changes only the options you pass. `--start` on its own moves the
+  event and keeps its length; `--occurrence <ts>` limits the change to one
+  occurrence, and `""` then falls back to the series' value.
+- `query` leaves cancelled events and occurrences out unless you pass
+  `--include-cancelled`. `--to` is exclusive, but a bare date includes that
+  whole day. `--format tsv` prints a header and the columns `id`,
+  `occurrence`, `start`, `end`, `all_day`, `status`, `category`, `title`.
+- `rm` and `edit` refuse events from read-only calendars (feeds, Proton,
+  `read_only = true`), since the next sync would undo the change.
+- `sync` takes calendar names to sync only those.
 
 ## JSON output
 
