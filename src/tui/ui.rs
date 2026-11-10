@@ -1059,6 +1059,26 @@ fn render_prompt(f: &mut Frame, area: Rect, app: &App) {
                 t.tag(),
             )
         }
+        Prompt::SelectionScope(list) => {
+            let n = list.len();
+            let repeating = list.iter().filter(|o| o.recurring()).count();
+            let head = match list.as_slice() {
+                [one] => format!("\"{}\" repeats.", one.title),
+                _ => format!("{repeating} of the {n} selected events repeat."),
+            };
+            let these = if n == 1 { "occurrence" } else { "occurrences" };
+            (
+                " Repeating events ",
+                vec![
+                    head,
+                    String::new(),
+                    format!("o  Delete just the selected {these}"),
+                    "a  Delete every occurrence of the repeating ones".into(),
+                    "Esc  cancel".into(),
+                ],
+                t.tag(),
+            )
+        }
     };
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(20) as u16 + 6;
     let rect = centered(area, width.max(30), lines.len() as u16 + 2);

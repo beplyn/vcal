@@ -265,6 +265,36 @@ fn recurring_delete_asks_for_scope() {
 }
 
 #[test]
+fn visual_delete_of_repeating_events_asks_for_scope() {
+    let mut a = app();
+    let mut ev = Event::new(
+        "Standup",
+        at(date(2026, 11, 9), 9, 0),
+        at(date(2026, 11, 9), 9, 15),
+    );
+    ev.rrule = Some("FREQ=DAILY".into());
+    a.db.insert(ev).unwrap();
+    add(&mut a, "Dentist", at(date(2026, 11, 10), 14, 0), 60);
+
+    // just the selected occurrences
+    press(&mut a, "vld");
+    assert!(screen(&mut a, 100, 30).contains("2 of the 3 selected events repeat"));
+    press(&mut a, "oy");
+    assert!(titles_on(&a, date(2026, 11, 9)).is_empty());
+    assert!(titles_on(&a, date(2026, 11, 10)).is_empty());
+    assert_eq!(titles_on(&a, date(2026, 11, 11)), ["Standup"]);
+
+    // every occurrence of the series
+    press(&mut a, "<Esc>llvd");
+    assert!(screen(&mut a, 100, 30).contains("repeats"));
+    press(&mut a, "a");
+    assert!(screen(&mut a, 100, 30).contains("every occurrence"));
+    press(&mut a, "y");
+    assert!(titles_on(&a, date(2026, 11, 11)).is_empty());
+    assert!(titles_on(&a, date(2026, 11, 20)).is_empty());
+    assert_eq!(a.db.events().unwrap().len(), 0);
+}
+#[test]
 fn change_edits_in_place() {
     let mut a = app();
     let ev = add(&mut a, "Dentist", at(date(2026, 11, 9), 14, 0), 60);

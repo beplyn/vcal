@@ -74,6 +74,9 @@ pub enum Prompt {
     Delete(Vec<Occurrence>),
     /// "This occurrence or the whole series?"
     Scope { occ: Occurrence, then: ScopeAction },
+    /// A visual selection that includes repeating events: "just these
+    /// occurrences, or every occurrence of their series?"
+    SelectionScope(Vec<Occurrence>),
 }
 
 /// How many changes `u` can go back.
@@ -1011,7 +1014,11 @@ impl App {
                 }
                 Ok(list) => {
                     self.exit_visual();
-                    self.ask(Prompt::Delete(list));
+                    if list.iter().any(Occurrence::recurring) {
+                        self.ask(Prompt::SelectionScope(list));
+                    } else {
+                        self.ask(Prompt::Delete(list));
+                    }
                 }
                 Err(e) => self.error(format!("{e:#}")),
             },
@@ -1272,6 +1279,20 @@ impl App {
                     }
                     ScopeAction::Delete => self.ask(Prompt::Delete(vec![occ.clone()])),
                 }
+            }
+            (Prompt::SelectionScope(list), 'o') => self.ask(Prompt::Delete(list.clone())),
+            (Prompt::SelectionScope(list), 'a' | 's') => {
+                // one whole-event entry per event, in selection order
+                let mut seen = std::collections::HashSet::new();
+                let whole = list
+                    .iter()
+                    .filter(|o| seen.insert(o.event_id.clone()))
+                    .map(|o| Occurrence {
+                        original_start: None,
+                        ..o.clone()
+                    })
+                    .collect();
+                self.ask(Prompt::Delete(whole));
             }
             _ => self.ask(prompt),
         }
