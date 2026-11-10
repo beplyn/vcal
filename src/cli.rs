@@ -154,12 +154,23 @@ enum Format {
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Instead of --title and --start, describe the event in words: \
+vcal add Dentist tomorrow 14:00 45m @health !1h. Recognised: a day (today, tomorrow, fri, \
+2026-11-20, 11-20, 20 nov), a time or range (14:00, 2pm, 9:30-10:15), a length (45m, 2d), \
+@category, !reminder, and daily / weekly / monthly / yearly / every mon,wed / every weekday. \
+The rest is the title; \\word keeps a word literal. Without a time it's all-day. The other \
+options still apply on top."
+)]
 struct AddArgs {
-    #[arg(long, short)]
-    title: String,
+    /// The event in words (see below)
+    #[arg(value_name = "WORDS", conflicts_with_all = ["title", "start", "end", "duration", "all_day"])]
+    words: Vec<String>,
+    #[arg(long, short, required_unless_present = "words")]
+    title: Option<String>,
     /// Start time, or the first day of an all-day event
-    #[arg(long, short, value_name = "WHEN")]
-    start: String,
+    #[arg(long, short, value_name = "WHEN", required_unless_present = "words")]
+    start: Option<String>,
     /// End time; for all-day events, the last day (inclusive)
     #[arg(long, short, value_name = "WHEN", conflicts_with = "duration")]
     end: Option<String>,
@@ -642,33 +653,46 @@ fn resolve_span(
 }
 
 fn add(db: &mut Db, args: AddArgs, tz: Tz, cfg: &Config) -> Result<()> {
-    let times = Times {
-        start: Some(&args.start),
-        end: args.end.as_deref(),
-        duration: args.duration.as_deref(),
+    let mut ev = if args.words.is_empty() {
+        let times = Times {
+            start: args.start.as_deref(),
+            end: args.end.as_deref(),
+            duration: args.duration.as_deref(),
+        };
+        let (start, end) = resolve_span(
+            &times,
+            args.all_day,
+            None,
+            tz,
+            cfg.settings.default_duration,
+        )?;
+        let mut ev = Event::new(args.title.unwrap_or_default(), start, end);
+        ev.all_day = args.all_day;
+        if !ev.all_day {
+            ev.tzid = Some(tz.name().to_string());
+        }
+        ev
+    } else {
+        let today = time::local_date(time::now(), tz);
+        crate::quick::parse(
+            &args.words.join(" "),
+            today,
+            today,
+            tz,
+            cfg.settings.default_duration,
+        )?
     };
-    let (start, end) = resolve_span(
-        &times,
-        args.all_day,
-        None,
-        tz,
-        cfg.settings.default_duration,
-    )?;
-    let mut ev = Event::new(args.title, start, end);
-    ev.all_day = args.all_day;
-    ev.category = args.category;
+    if args.category.is_some() {
+        ev.category = args.category;
+    }
     ev.description = args.description.unwrap_or_default();
     ev.location = args.location;
-    ev.rrule = args.rrule;
+    if args.rrule.is_some() {
+        ev.rrule = args.rrule;
+    }
     ev.status = args.status;
-    ev.reminder = args
-        .reminder
-        .as_deref()
-        .map(time::parse_reminder)
-        .transpose()?
-        .flatten();
-    if !ev.all_day {
-        ev.tzid = Some(tz.name().to_string());
+    if let Some(r) = args.reminder.as_deref() {
+        ev.reminder = time::parse_reminder(r)?;
     }
     let saved = db.insert(ev)?;
     emit(&format!("{}\n", saved.id))

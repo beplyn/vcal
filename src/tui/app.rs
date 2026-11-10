@@ -1212,6 +1212,8 @@ impl App {
             },
             "month" | "week" | "day" => self.set_view(View::parse(cmd).unwrap_or_default()),
             "import" if !arg.is_empty() => self.import(arg),
+            "a" | "add" if !arg.is_empty() => self.quick_add(arg),
+            "a" | "add" => self.error("usage: :add Dentist tomorrow 14:00 45m @health"),
             "noh" | "nohlsearch" => self.filter = None,
             "h" | "help" => self.mode = Mode::Help,
             "reload" => {
@@ -1236,6 +1238,34 @@ impl App {
                 }
             }
             Err(e) => self.error(format!("{e:#}")),
+        }
+    }
+
+    /// `:add <words>`: an event from one line (see `crate::quick`), on the
+    /// cursor's day unless the words name one.
+    fn quick_add(&mut self, arg: &str) {
+        let ev = match crate::quick::parse(
+            arg,
+            self.cursor,
+            self.today(),
+            self.tz,
+            self.settings.default_duration,
+        ) {
+            Ok(ev) => ev,
+            Err(e) => return self.error(format!("{e:#}")),
+        };
+        let (start, all_day) = (ev.start, ev.all_day);
+        let summary = crate::quick::describe(&ev, self.tz, self.settings.clock_24h);
+        if self.write(|db| db.insert(ev).map(|_| format!("created {summary}"))) {
+            self.cursor = if all_day {
+                time::floating_date(start)
+            } else {
+                time::local_date(start, self.tz)
+            };
+            if !all_day {
+                self.slot = self.clamp_slot(self.slot_of(start));
+            }
+            self.event_idx = 0;
         }
     }
 

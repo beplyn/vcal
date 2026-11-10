@@ -31,6 +31,7 @@ vcal add -t "Dentist" -s "2026-11-10 14:00" -D 45m -c health -l "Dr. Lee"
 vcal add -t "Trip" -s 2026-11-20 -e 2026-11-22 --all-day
 vcal add -t "Standup" -s "today 09:30" -D 15m -r "FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR"
 vcal add -t "Flight" -s "2026-11-12 07:10" -R 2h       # remind 2 hours before
+vcal add Dentist tomorrow 14:00 45m @health !1h      # the same in words; see tui.md#quick-add
 
 # change only the given fields; "" clears a field (an occurrence falls back to the series)
 vcal edit <id> --start "2026-11-11 09:00"          # moves it, keeps its length

@@ -60,9 +60,32 @@ view), and `o` creates an event spanning the selection.
 | `:today` | Go to today |
 | `:view month\|week\|day` | Switch view |
 | `:import <file.ics>` | Import an iCalendar file |
+| `:add <words>`, `:a` | Create an event from one line: `:add Dentist tomorrow 14:00 45m @health` ([quick add](#quick-add)) |
 | `:export <file.ics>`, `:w <file.ics>` | Write every event to an iCalendar file |
 | `:noh` | Clear the search filter |
 | `:reload` | Re-read events and config |
+
+### Quick add
+
+`:add` (and `vcal add` given words instead of `--title`/`--start`) reads one
+line. The words it recognises are taken out, and the rest, in order, is the
+title:
+
+| Words | Meaning |
+|---|---|
+| `today` `tomorrow` `fri` `friday` `2026-11-20` `11-20` `20 nov` `nov 20` | The day. A weekday means the next one, today included. Default: the cursor's day (`vcal add`: today) |
+| `14:00` `9:30am` `2pm` `14:00-15:30` | Start time, or start and end. Without one the event is all-day |
+| `45m` `1h30m` `2d` | Length (whole days for all-day events) |
+| `@health` | Category |
+| `!10m` | Reminder that long before the start |
+| `daily` `weekly` `monthly` `yearly` `every mon,wed` `every weekday` `every day` | Repeat |
+| `\word` | A word kept in the title as is (`\today`) |
+
+```
+:add Dentist tomorrow 14:00 45m @health !1h
+:add Standup mon 9:30-9:45 every weekday @work
+:add Trip 2026-11-20 3d
+```
 
 ## The event dialog
 

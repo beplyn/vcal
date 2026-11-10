@@ -6,6 +6,7 @@ pub mod db;
 pub mod ics;
 pub mod maintenance;
 pub mod model;
+pub mod quick;
 pub mod settings;
 pub mod time;
 pub mod tui;

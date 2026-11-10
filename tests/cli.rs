@@ -970,3 +970,31 @@ fn doctor_and_backup() {
     assert!(!left.contains(&"events-20210101T000000Z.db".to_string()));
     assert!(left.contains(&"notes.txt".to_string()));
 }
+
+#[test]
+fn add_in_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    ok(
+        &db,
+        &[
+            "add",
+            "Review",
+            "2026-11-12",
+            "10:00-11:30",
+            "@work",
+            "-l",
+            "Room 4",
+        ],
+    );
+    let row = &json(&db, "2026-11-12", "2026-11-12")[0];
+    assert_eq!(row["title"], "Review");
+    assert_eq!(row["start"], "2026-11-12T10:00:00+01:00");
+    assert_eq!(row["end"], "2026-11-12T11:30:00+01:00");
+    assert_eq!(
+        (row["category"].as_str(), row["location"].as_str()),
+        (Some("work"), Some("Room 4"))
+    );
+    assert!(err(&db, &["add", "Review", "-t", "x"]).contains("cannot be used with"));
+    assert!(err(&db, &["add"]).contains("required"));
+}

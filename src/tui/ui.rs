@@ -991,7 +991,7 @@ fn render_help(f: &mut Frame, area: Rect, app: &App) {
         entries.push((keys.join(" "), desc));
     }
     entries.push((
-        ":q :jump :view :import :export".into(),
+        ":q :jump :view :add :import :export".into(),
         "commands (also :today :noh :reload)",
     ));
 

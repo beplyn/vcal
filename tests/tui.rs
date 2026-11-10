@@ -726,3 +726,33 @@ fn counts_in_week_view_and_visual() {
     );
     assert_eq!(a.slot, slot + 3);
 }
+
+#[test]
+fn quick_add_command() {
+    let mut a = app();
+    press(&mut a, "lll"); // Thursday the 12th
+    press(&mut a, ":add Dentist 14:00 45m @health<CR>");
+    assert_eq!(a.mode, Mode::Normal);
+    let msg = a.message.clone().unwrap();
+    assert!(!msg.error, "{}", msg.text);
+    assert_eq!(
+        msg.text,
+        "created \"Dentist\" Thu 12 Nov 14:00 (45m) @health"
+    );
+    let o = &a.day_events(date(2026, 11, 12))[0];
+    assert_eq!(
+        (o.start, o.end),
+        (
+            at(date(2026, 11, 12), 14, 0),
+            at(date(2026, 11, 12), 14, 45)
+        )
+    );
+
+    // a named day moves the cursor there
+    press(&mut a, ":a Trip fri 2d<CR>");
+    assert_eq!(a.cursor, date(2026, 11, 13));
+    assert!(a.day_events(date(2026, 11, 14))[0].all_day);
+
+    press(&mut a, ":add tomorrow<CR>");
+    assert!(a.message.as_ref().unwrap().error);
+}
