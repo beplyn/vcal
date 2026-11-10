@@ -10,8 +10,8 @@ use super::{Db, recurrence};
 use crate::model::{Event, Exception, ExceptionKind, Occurrence, Status};
 use crate::time::{self, DAY};
 
-const EVENT_COLS: &str = "id, title, description, category, location, start_ts, end_ts, \
-                          all_day, tzid, rrule, status, created_ts, updated_ts, reminder_minutes";
+pub(super) const EVENT_COLS: &str = "id, title, description, category, location, start_ts, end_ts, \
+                          all_day, tzid, rrule, status, created_ts, updated_ts, reminder_minutes, calendar";
 const EXCEPTION_COLS: &str =
     "event_id, original_start_ts, kind, title, description, category, location, start_ts, end_ts";
 
@@ -22,7 +22,7 @@ pub struct Snapshot {
     pub exceptions: Vec<Exception>,
 }
 
-fn event_from_row(r: &Row) -> rusqlite::Result<Event> {
+pub(super) fn event_from_row(r: &Row) -> rusqlite::Result<Event> {
     let status: String = r.get(10)?;
     Ok(Event {
         id: r.get(0)?,
@@ -40,6 +40,7 @@ fn event_from_row(r: &Row) -> rusqlite::Result<Event> {
         created: r.get(11)?,
         updated: r.get(12)?,
         reminder: r.get(13)?,
+        calendar: r.get(14)?,
     })
 }
 
@@ -106,7 +107,7 @@ fn prepare(ev: &mut Event) -> Result<Option<i64>> {
 }
 
 /// Inserts, or with `upsert` replaces, an event (keeping its creation time).
-fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> {
+pub(super) fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> {
     let series_end = prepare(&mut ev)?;
     ev.updated = time::now();
     let conflict = if upsert {
@@ -114,14 +115,15 @@ fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> 
          category = excluded.category, location = excluded.location, start_ts = excluded.start_ts,
          end_ts = excluded.end_ts, all_day = excluded.all_day, tzid = excluded.tzid,
          rrule = excluded.rrule, series_end_ts = excluded.series_end_ts, status = excluded.status,
-         updated_ts = excluded.updated_ts, reminder_minutes = excluded.reminder_minutes"
+         updated_ts = MAX(excluded.updated_ts, events.updated_ts + 1), reminder_minutes = excluded.reminder_minutes,
+         calendar = excluded.calendar"
     } else {
         ""
     };
     conn.execute(
         &format!(
             "INSERT INTO events ({EVENT_COLS}, series_end_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) {conflict}"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) {conflict}"
         ),
         params![
             ev.id,
@@ -138,6 +140,7 @@ fn write_event(conn: &Connection, mut ev: Event, upsert: bool) -> Result<Event> 
             ev.created,
             ev.updated,
             ev.reminder,
+            ev.calendar,
             series_end,
         ],
     )
@@ -162,7 +165,28 @@ fn note_span(conn: &Connection, span: i64) -> Result<()> {
     Ok(())
 }
 
-fn get_event(conn: &Connection, id: &str) -> Result<Option<Event>> {
+/// Refuses changes to events of a read-only (subscribed) calendar: the next
+/// sync would undo them.
+fn writable(conn: &Connection, id: &str) -> Result<()> {
+    let from: Option<(String, String)> = conn
+        .query_row(
+            "SELECT e.title, c.name FROM events e
+             JOIN calendars c ON c.name = e.calendar AND c.read_only = 1
+             WHERE e.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((title, calendar)) = from {
+        bail!(
+            "\"{title}\" comes from the read-only calendar \"{calendar}\", and the next sync \
+             would undo changes; copy it (yy p) to have one of your own"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn get_event(conn: &Connection, id: &str) -> Result<Option<Event>> {
     Ok(conn
         .query_row(
             &format!("SELECT {EVENT_COLS} FROM events WHERE id = ?1"),
@@ -172,7 +196,7 @@ fn get_event(conn: &Connection, id: &str) -> Result<Option<Event>> {
         .optional()?)
 }
 
-fn write_exception(conn: &Connection, mut exc: Exception) -> Result<()> {
+pub(super) fn write_exception(conn: &Connection, mut exc: Exception) -> Result<()> {
     let Some(ev) = get_event(conn, &exc.event_id)? else {
         bail!("no event with id {}", exc.event_id);
     };
@@ -207,6 +231,11 @@ fn write_exception(conn: &Connection, mut exc: Exception) -> Result<()> {
             exc.end,
         ],
     )?;
+    // a changed occurrence changes the event, for sync
+    conn.execute(
+        "UPDATE events SET updated_ts = MAX(?2, updated_ts + 1) WHERE id = ?1",
+        params![exc.event_id, time::now()],
+    )?;
     Ok(())
 }
 
@@ -233,6 +262,7 @@ fn occurrence(
         all_day: ev.all_day,
         status: ev.status,
         reminder: ev.reminder,
+        calendar: ev.calendar.clone(),
         modified: false,
     };
     if let Some(x) = exc.filter(|x| x.kind == ExceptionKind::Modified) {
@@ -272,6 +302,7 @@ impl Db {
                 "no event with id {}",
                 ev.id
             );
+            writable(tx, &ev.id)?;
             write_event(tx, ev, true)
         })
     }
@@ -331,12 +362,18 @@ impl Db {
 
     /// Deletes an event and, by cascade, its exceptions. False if it didn't exist.
     pub fn delete(&mut self, id: &str) -> Result<bool> {
-        self.write(|tx| Ok(tx.execute("DELETE FROM events WHERE id = ?1", [id])? > 0))
+        self.write(|tx| {
+            writable(tx, id)?;
+            Ok(tx.execute("DELETE FROM events WHERE id = ?1", [id])? > 0)
+        })
     }
 
     /// Records a cancelled or modified occurrence of a recurring event.
     pub fn set_exception(&mut self, exc: Exception) -> Result<()> {
-        self.write(|tx| write_exception(tx, exc))
+        self.write(|tx| {
+            writable(tx, &exc.event_id)?;
+            write_exception(tx, exc)
+        })
     }
 
     pub fn cancel_occurrence(&mut self, id: &str, original_start: i64) -> Result<()> {
@@ -364,7 +401,11 @@ impl Db {
     ) -> Result<(usize, usize)> {
         self.write(|tx| {
             let n_events = events.len();
-            for ev in events {
+            for mut ev in events {
+                if ev.calendar.is_none() {
+                    // a file doesn't move an event out of its synced calendar
+                    ev.calendar = get_event(tx, &ev.id)?.and_then(|e| e.calendar);
+                }
                 tx.execute("DELETE FROM event_exceptions WHERE event_id = ?1", [&ev.id])?;
                 write_event(tx, ev, true)?;
             }
@@ -519,7 +560,7 @@ impl Db {
                 .join(", "),
         ))?;
         let rows = moved.query_map(named_params! { ":lo": lo, ":hi": hi, ":span": span }, |r| {
-            Ok((event_from_row(r)?, exception_from_row(r, 14)?))
+            Ok((event_from_row(r)?, exception_from_row(r, 15)?))
         })?;
         for row in rows {
             let (ev, exc) = row?;

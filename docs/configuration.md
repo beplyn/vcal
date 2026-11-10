@@ -93,3 +93,9 @@ paste = []
 
 `vcal config default` lists every action name with its default keys, and
 `?` in the TUI shows what's in effect.
+
+## Calendars
+
+`[calendars.<name>]` tables configure the feeds, Proton Calendar links and
+CalDAV calendars that `vcal sync` keeps in step. [sync.md](sync.md) covers
+every key, and `vcal config default` has commented examples.

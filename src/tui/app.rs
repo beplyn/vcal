@@ -127,6 +127,8 @@ pub struct App {
     /// Changes `u` can revert, newest last, and ones `<C-r>` can redo.
     pub undo: Vec<Change>,
     pub redo: Vec<Change>,
+    /// `[calendars]` from the config: for the dialog, `:add`, paste and `:sync`.
+    pub calendars: Vec<config::CalendarConfig>,
     pub message: Option<Message>,
     pub quit: bool,
     cache: Vec<Occurrence>,
@@ -204,6 +206,7 @@ impl App {
             yanked: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
+            calendars: Vec::new(),
             message: None,
             quit: false,
             cache: Vec::new(),
@@ -230,6 +233,7 @@ impl App {
         self.settings = cfg.settings;
         self.theme = cfg.theme;
         self.keymap = cfg.keymap;
+        self.calendars = cfg.calendars;
         self.pending.clear();
         self.slot = self.clamp_slot(minutes / self.settings.slot_minutes);
         self.scroll = top / self.settings.slot_minutes;
@@ -997,8 +1001,8 @@ impl App {
             }
             Action::NewEvent => self.open_new(),
             Action::NewAllDay => {
-                self.form = Some(Form::new_all_day(self.cursor, self.cursor));
-                self.mode = Mode::Insert;
+                let form = Form::new_all_day(self.cursor, self.cursor);
+                self.show_form(form);
             }
             Action::Delete if visual => match self.selected_occurrences() {
                 Ok(list) if list.is_empty() => {
@@ -1126,19 +1130,36 @@ impl App {
             }
         };
         self.exit_visual();
+        self.show_form(form);
+    }
+
+    /// Opens the dialog, offering the Calendar field when calendars are
+    /// configured and filling in the default one for a new event.
+    fn show_form(&mut self, mut form: Form) {
+        form.show_calendar = !self.calendars.is_empty();
+        if matches!(form.target, super::form::Target::New) {
+            form.calendar = TextInput::new(self.default_calendar().unwrap_or_default());
+        }
         self.form = Some(form);
         self.mode = Mode::Insert;
+    }
+
+    pub fn default_calendar(&self) -> Option<String> {
+        self.calendars
+            .iter()
+            .find(|c| c.default)
+            .map(|c| c.name.clone())
     }
 
     fn open_edit(&mut self, occ: &Occurrence, series: bool) {
         match self.db.get(&occ.event_id) {
             Ok(Some(ev)) => {
-                self.form = Some(if series {
+                let form = if series {
                     Form::edit_series(ev, self.tz)
                 } else {
                     Form::edit_occurrence(ev, occ, self.tz)
-                });
-                self.mode = Mode::Insert;
+                };
+                self.show_form(form);
             }
             Ok(None) => self.error("that event no longer exists"),
             Err(e) => self.error(format!("{e:#}")),
@@ -1166,6 +1187,15 @@ impl App {
                 return;
             }
         };
+        if let Submit::Insert(e) | Submit::Update(e) = &submit
+            && let Some(name) = &e.calendar
+        {
+            let unchanged = matches!(&form.target, super::form::Target::Series(old) if old.calendar.as_ref() == Some(name));
+            if !unchanged && let Err(err) = config::writable_calendar(&self.calendars, name) {
+                form.error = Some(format!("{err:#}"));
+                return;
+            }
+        }
         let (start, all_day) = match &submit {
             Submit::Insert(e) | Submit::Update(e) => (e.start, e.all_day),
             Submit::Exception(x) => (x.start.unwrap_or(x.original_start), form.all_day),
@@ -1283,6 +1313,7 @@ impl App {
         // Week/day views paste at the cursor slot; month view keeps the time of day.
         let instant_shift = (!self.view.by_days() && !base.all_day)
             .then(|| self.slot_ts(self.cursor, self.slot) - base.start);
+        let default_calendar = self.default_calendar();
         let copies: Vec<Event> = self
             .yanked
             .iter()
@@ -1301,6 +1332,8 @@ impl App {
                 ev.location = o.location.clone();
                 ev.reminder = o.reminder;
                 ev.all_day = o.all_day;
+                // a copy is yours, wherever the original came from
+                ev.calendar = default_calendar.clone();
                 if !o.all_day {
                     ev.tzid = Some(tz.name().to_string());
                 }
@@ -1556,6 +1589,7 @@ impl App {
                 self.set_view(View::parse(cmd).unwrap_or_default())
             }
             "import" if !arg.is_empty() => self.import(arg),
+            "sync" => self.sync(arg),
             "a" | "add" if !arg.is_empty() => self.quick_add(arg),
             "a" | "add" => self.error("usage: :add Dentist tomorrow 14:00 45m @health"),
             "noh" | "nohlsearch" => self.filter = None,
@@ -1585,6 +1619,45 @@ impl App {
         }
     }
 
+    /// `:sync [names]`, as `vcal sync`. It waits on the network, so the
+    /// screen holds still until it's done.
+    fn sync(&mut self, arg: &str) {
+        if self.calendars.is_empty() {
+            return self.error("no [calendars] configured (see vcal config default)");
+        }
+        let cfg = Config {
+            calendars: self.calendars.clone(),
+            ..Config::default()
+        };
+        let names: Vec<String> = arg.split_whitespace().map(str::to_string).collect();
+        let result = crate::sync::sync(&mut self.db, &cfg, &names, self.tz);
+        self.invalidate();
+        self.stamp = self.read_stamp();
+        match result {
+            Ok(outcomes) => {
+                let failed: Vec<String> = outcomes
+                    .iter()
+                    .filter(|o| o.failed)
+                    .map(|o| format!("{}: {}", o.name, o.summary))
+                    .collect();
+                let warnings: usize = outcomes.iter().map(|o| o.warnings.len()).sum();
+                if !failed.is_empty() {
+                    self.error(failed.join("; "));
+                } else {
+                    let mut msg: Vec<String> = outcomes
+                        .iter()
+                        .map(|o| format!("{}: {}", o.name, o.summary))
+                        .collect();
+                    if warnings > 0 {
+                        msg.push(format!("{warnings} warnings (vcal sync shows them)"));
+                    }
+                    self.info(msg.join(" · "));
+                }
+            }
+            Err(e) => self.error(format!("{e:#}")),
+        }
+    }
+
     /// `:add <words>`: an event from one line (see `crate::quick`), on the
     /// cursor's day unless the words name one.
     fn quick_add(&mut self, arg: &str) {
@@ -1598,6 +1671,8 @@ impl App {
             Ok(ev) => ev,
             Err(e) => return self.error(format!("{e:#}")),
         };
+        let mut ev = ev;
+        ev.calendar = self.default_calendar();
         let (start, all_day) = (ev.start, ev.all_day);
         let summary = crate::quick::describe(&ev, self.tz, self.settings.clock_24h);
         let id = ev.id.clone();

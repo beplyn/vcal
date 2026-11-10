@@ -77,6 +77,7 @@ view), and `o` creates an event spanning the selection.
 | `:export <file.ics>`, `:w <file.ics>` | Write every event to an iCalendar file |
 | `:noh` | Clear the search filter |
 | `:reload` | Re-read events and config |
+| `:sync [name]` | Sync calendars, as `vcal sync` (see [sync.md](sync.md)) |
 
 ### Quick add
 
@@ -109,6 +110,8 @@ inclusive. `Repeat` is an RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=MO,WE`.
 `Reminder` is how long before the start `vcal notify` should alert you
 (`10m`, `1h`, `1d`); leave it empty for none. Use `Tab`/`S-Tab` to move
 between fields and `Space` to toggle all day.
+When calendars are configured, a `Calendar` field picks which one the event
+syncs with (empty: local only); new events start with the default one.
 
 ## Shared with other programs
 

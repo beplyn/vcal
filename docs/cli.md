@@ -45,6 +45,8 @@ vcal rm <id>
 vcal rm <id> --occurrence <ts>
 
 vcal import calendar.ics                            # or - for stdin
+vcal sync                                           # fetch feeds, sync CalDAV; see sync.md
+vcal calendars                                      # the configured calendars and their last sync
 vcal export backup.ics                              # or to stdout; -c work, --id <id> to filter
 
 vcal show <id>                                      # one event in full: recurrence, exceptions, next dates
@@ -68,8 +70,11 @@ Every command takes `--db <path>` and `--config <path>`; see
   "category": "work", "location": null, "all_day": false,
   "start": "2026-11-10T09:30:00+01:00", "end": "2026-11-10T09:45:00+01:00",
   "start_ts": 1794299400, "end_ts": 1794300300,
-  "status": "confirmed", "reminder": 10, "recurring": true, "modified": false }
+  "status": "confirmed", "reminder": 10, "recurring": true, "modified": false,
+  "calendar": "nextcloud" }
 ```
+
+`calendar` is the `[calendars]` entry the event syncs with, or `null` for a local event (see [sync.md](sync.md)).
 
 `reminder` is minutes before the start, or `null`. `occurrence` is the handle that `edit --occurrence` and `rm --occurrence`
 take; it's `null` for events that don't repeat. All-day rows have dates in

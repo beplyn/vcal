@@ -36,8 +36,9 @@ man page and shell completions for cargo installs.
 |---|---|
 | [Installing](docs/install.md) | Nix (flake input, overlay, profile) and cargo |
 | [The TUI](docs/tui.md) | Views, modes, key bindings, `:` commands, the event dialog |
-| [The CLI](docs/cli.md) | `query`, `show`, `next`, `add`, `edit`, `rm`, `notify`, `import`, `export`, `doctor`, `backup`, `config`; JSON output |
+| [The CLI](docs/cli.md) | `query`, `show`, `next`, `add`, `edit`, `rm`, `notify`, `import`, `export`, `sync`, `calendars`, `doctor`, `backup`, `config`; JSON output |
 | [Configuration](docs/configuration.md) | File locations, `config.toml`, themes, key bindings |
+| [Syncing calendars](docs/sync.md) | Feeds, Proton Calendar share links, two-way CalDAV (Nextcloud) |
 | [Home-Manager](docs/home-manager.md) | `programs.vcal`, Stylix colours |
 | [Desktop integration](docs/desktop.md) | Watching the database from widgets and scripts |
 | [Development](docs/development.md) | Dev shell, tests, `nix flake check`, the flake's layout |

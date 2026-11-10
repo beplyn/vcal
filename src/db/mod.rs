@@ -6,6 +6,7 @@
 mod migrations;
 pub mod recurrence;
 mod repo;
+mod sync;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,6 +16,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub use migrations::latest as schema_version;
 pub use repo::Snapshot;
+pub use sync::{CalendarInfo, SyncItem};
 
 pub struct Db {
     conn: Connection,

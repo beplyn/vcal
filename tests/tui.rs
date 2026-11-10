@@ -972,3 +972,70 @@ fn move_and_resize_with_keys() {
     assert_eq!(a.db.exceptions(&gym.id).unwrap().len(), 1);
     assert_eq!(a.db.get(&gym.id).unwrap().unwrap().start, gym.start);
 }
+
+#[test]
+fn calendars_in_the_dialog() {
+    let mut a = app();
+    let cfg = vcal::config::parse(
+        "[calendars.nc]\ntype = \"caldav\"\nurl = \"https://x/cal/\"\ndefault = true\n\
+         [calendars.feed]\ntype = \"ics\"\nurl = \"https://x/f.ics\"\n",
+    )
+    .unwrap();
+    a.apply_config(cfg);
+    // a new event is filled in with the default calendar
+    press(&mut a, "oLunch<CR>");
+    let lunch = a.day_events(date(2026, 11, 9))[0].clone();
+    assert_eq!(lunch.calendar.as_deref(), Some("nc"));
+    // :add and paste use it too
+    press(&mut a, ":add Tea 16:00<CR>");
+    assert!(
+        a.day_events(date(2026, 11, 9))
+            .iter()
+            .all(|o| o.calendar.as_deref() == Some("nc"))
+    );
+
+    // a read-only calendar can't be chosen, and nothing is lost
+    press(&mut a, "cc");
+    let fields = a.form.as_ref().unwrap().fields();
+    assert!(fields.contains(&vcal::tui::form::Field::Calendar));
+    for _ in 0..fields.len() - 1 {
+        press(&mut a, "<Tab>");
+    }
+    press(&mut a, "<C-u>feed<CR>");
+    assert_eq!(a.mode, Mode::Insert);
+    assert_eq!(
+        a.form.as_ref().unwrap().error.as_deref(),
+        Some("calendar \"feed\" is read-only")
+    );
+    press(&mut a, "<C-u><CR>");
+    assert_eq!(a.mode, Mode::Normal, "empty: local only");
+
+    // events of a read-only calendar refuse changes
+    let mut ev = Event::new(
+        "Holiday",
+        time::floating(date(2026, 11, 10)),
+        time::floating(date(2026, 11, 11)),
+    );
+    ev.all_day = true;
+    ev.calendar = Some("feed".into());
+    a.db.insert(ev).unwrap();
+    a.db.register_calendar("feed", "ics", true).unwrap();
+    a.reload();
+    press(&mut a, "ldd");
+    press(&mut a, "y");
+    let msg = a.message.clone().unwrap();
+    assert!(
+        msg.error && msg.text.contains("read-only calendar \"feed\""),
+        "{}",
+        msg.text
+    );
+
+    press(&mut a, ":sync nope<CR>");
+    assert!(
+        a.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("no calendar \"nope\"")
+    );
+}

@@ -27,6 +27,184 @@ pub struct Config {
     pub keymap: Keymap,
     /// `[general] database_path`, `~` expanded.
     pub database_path: Option<PathBuf>,
+    /// `[calendars.<name>]`, by name.
+    pub calendars: Vec<CalendarConfig>,
+}
+
+impl Config {
+    /// The calendar new events go to, if one is marked `default`.
+    pub fn default_calendar(&self) -> Option<&str> {
+        self.calendars
+            .iter()
+            .find(|c| c.default)
+            .map(|c| c.name.as_str())
+    }
+
+    pub fn calendar(&self, name: &str) -> Option<&CalendarConfig> {
+        self.calendars.iter().find(|c| c.name == name)
+    }
+
+    /// Checks that events may be put in `name`: it's configured and writable.
+    pub fn writable_calendar(&self, name: &str) -> Result<()> {
+        writable_calendar(&self.calendars, name)
+    }
+}
+
+/// [`Config::writable_calendar`] over a list of calendars.
+pub fn writable_calendar(calendars: &[CalendarConfig], name: &str) -> Result<()> {
+    let names: Vec<&str> = calendars
+        .iter()
+        .filter(|c| !c.read_only)
+        .map(|c| c.name.as_str())
+        .collect();
+    match calendars.iter().find(|c| c.name == name) {
+        Some(c) if c.read_only => bail!("calendar {name:?} is read-only"),
+        Some(_) => Ok(()),
+        None if names.is_empty() => bail!(
+            "no calendar {name:?}: no writable calendars are configured (see [calendars] in \
+             vcal config default)"
+        ),
+        None => bail!("no calendar {name:?} (writable ones: {})", names.join(", ")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarKind {
+    /// A read-only iCalendar feed: http(s), webcal(s) or a local file.
+    Ics,
+    /// A Proton Calendar share link: an ICS feed that's read-only by design.
+    Proton,
+    /// Two-way sync with a CalDAV collection (Nextcloud, Radicale, ...).
+    CalDav,
+}
+
+impl CalendarKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            CalendarKind::Ics => "ics",
+            CalendarKind::Proton => "proton",
+            CalendarKind::CalDav => "caldav",
+        }
+    }
+}
+
+/// Where a password comes from; never stored in the config itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Secret {
+    None,
+    /// Run with `sh -c`; the first line of its output.
+    Command(String),
+    /// The file's first line.
+    File(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarConfig {
+    pub name: String,
+    pub kind: CalendarKind,
+    /// For an `ics` feed on disk, `~` expanded.
+    pub url: String,
+    pub username: Option<String>,
+    pub password: Secret,
+    /// Given to events that come without one.
+    pub category: Option<String>,
+    /// Feeds always are; CalDAV can be made so.
+    pub read_only: bool,
+    /// New events go here.
+    pub default: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCalendar {
+    r#type: String,
+    url: String,
+    username: Option<String>,
+    password_command: Option<String>,
+    password_file: Option<String>,
+    category: Option<String>,
+    read_only: Option<bool>,
+    #[serde(default)]
+    default: bool,
+}
+
+fn calendar(name: String, raw: RawCalendar) -> Result<CalendarConfig> {
+    let at = format!("[calendars.{name}]");
+    ensure!(
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "{at}: names are letters, digits, - and _"
+    );
+    let kind = match raw.r#type.to_ascii_lowercase().as_str() {
+        "ics" | "feed" | "webcal" => CalendarKind::Ics,
+        "proton" => CalendarKind::Proton,
+        "caldav" | "nextcloud" => CalendarKind::CalDav,
+        other => bail!("{at} type: {other:?} must be \"ics\", \"proton\" or \"caldav\""),
+    };
+    let url = raw.url.trim().to_string();
+    let lower = url.to_ascii_lowercase();
+    let web = ["http://", "https://", "webcal://", "webcals://"]
+        .iter()
+        .any(|p| lower.starts_with(p));
+    let url = match kind {
+        CalendarKind::Ics if web => url,
+        CalendarKind::Ics => expand_home(&url)
+            .with_context(|| format!("{at} url: an http(s)/webcal URL or a file"))?
+            .to_string_lossy()
+            .into_owned(),
+        CalendarKind::Proton => {
+            ensure!(
+                lower.starts_with("https://"),
+                "{at} url: a Proton share link starts with https://calendar.proton.me/"
+            );
+            url
+        }
+        CalendarKind::CalDav => {
+            ensure!(
+                lower.starts_with("https://") || lower.starts_with("http://"),
+                "{at} url: the calendar's http(s) address"
+            );
+            if url.ends_with('/') { url } else { url + "/" }
+        }
+    };
+    let password = match (raw.password_command, raw.password_file) {
+        (Some(_), Some(_)) => bail!("{at}: give password_command or password_file, not both"),
+        (Some(c), None) => Secret::Command(c),
+        (None, Some(f)) => {
+            Secret::File(expand_home(&f).with_context(|| format!("{at} password_file"))?)
+        }
+        (None, None) => Secret::None,
+    };
+    let feed = kind != CalendarKind::CalDav;
+    if feed {
+        ensure!(
+            raw.username.is_none() && password == Secret::None,
+            "{at}: a {} feed takes no username or password (put any token in the URL)",
+            kind.name()
+        );
+        ensure!(
+            raw.read_only != Some(false),
+            "{at}: a {} feed is always read-only",
+            kind.name()
+        );
+    }
+    let read_only = feed || raw.read_only.unwrap_or(false);
+    ensure!(
+        !(raw.default && read_only),
+        "{at}: default = true needs a writable caldav calendar"
+    );
+    Ok(CalendarConfig {
+        name,
+        kind,
+        url,
+        username: raw.username,
+        password,
+        category: raw.category.filter(|c| !c.trim().is_empty()),
+        read_only,
+        default: raw.default,
+    })
 }
 
 #[derive(Deserialize, Default)]
@@ -36,6 +214,7 @@ struct Raw {
     views: Views,
     theme: BTreeMap<String, toml::Value>,
     keybindings: Keybindings,
+    calendars: BTreeMap<String, RawCalendar>,
 }
 
 #[derive(Deserialize, Default)]
@@ -208,6 +387,20 @@ pub fn parse(text: &str) -> Result<Config> {
             cfg.keymap.rebind(mode, action, keys);
         }
     }
+    for (name, raw) in raw.calendars {
+        cfg.calendars.push(calendar(name, raw)?);
+    }
+    let defaults: Vec<&str> = cfg
+        .calendars
+        .iter()
+        .filter(|c| c.default)
+        .map(|c| c.name.as_str())
+        .collect();
+    ensure!(
+        defaults.len() <= 1,
+        "[calendars]: only one can be the default (got {})",
+        defaults.join(", ")
+    );
     let conflicts = cfg.keymap.conflicts();
     ensure!(
         conflicts.is_empty(),
@@ -377,6 +570,41 @@ mod tests {
     }
 
     #[test]
+    fn calendars() {
+        let cfg = parse(
+            r#"
+            [calendars.holidays]
+            type = "ics"
+            url = "webcal://example.com/h.ics"
+            category = "holiday"
+            [calendars.nc]
+            type = "caldav"
+            url = "https://cloud.example.com/remote.php/dav/calendars/a/personal"
+            username = "a"
+            password_command = "echo secret"
+            default = true
+            [calendars.file]
+            type = "ics"
+            url = "/srv/team.ics"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.calendars.len(), 3);
+        let nc = cfg.calendar("nc").unwrap();
+        assert_eq!(nc.kind, CalendarKind::CalDav);
+        assert!(nc.url.ends_with("/personal/"), "a trailing slash is added");
+        assert_eq!(nc.password, Secret::Command("echo secret".into()));
+        assert!(!nc.read_only);
+        assert_eq!(cfg.default_calendar(), Some("nc"));
+        assert!(cfg.calendar("holidays").unwrap().read_only);
+        assert!(cfg.writable_calendar("nc").is_ok());
+        let e = cfg.writable_calendar("holidays").unwrap_err().to_string();
+        assert!(e.contains("read-only"), "{e}");
+        let e = cfg.writable_calendar("nope").unwrap_err().to_string();
+        assert!(e.contains("writable ones: nc"), "{e}");
+    }
+
+    #[test]
     fn errors_name_the_key() {
         for (text, needle) in [
             ("[general]\nclock = \"25h\"", "[general] clock"),
@@ -395,6 +623,32 @@ mod tests {
             ("[keybindings.normal]\nfly = [\"f\"]", "unknown action"),
             ("[keybindings.normal]\npaste = [\"g\"]", "prefix"),
             ("[general]\ncolour = \"red\"", "unknown field"),
+            (
+                "[calendars.x]\ntype = \"gcal\"\nurl = \"https://a\"",
+                "[calendars.x] type",
+            ),
+            (
+                "[calendars.\"a b\"]\ntype = \"ics\"\nurl = \"https://a\"",
+                "names are letters",
+            ),
+            (
+                "[calendars.x]\ntype = \"proton\"\nurl = \"http://a\"",
+                "share link",
+            ),
+            (
+                "[calendars.x]\ntype = \"ics\"\nurl = \"https://a\"\nusername = \"u\"",
+                "takes no username",
+            ),
+            (
+                "[calendars.x]\ntype = \"ics\"\nurl = \"https://a\"\ndefault = true",
+                "default = true needs",
+            ),
+            (
+                "[calendars.x]\ntype = \"caldav\"\nurl = \"https://a\"\ndefault = true\n\
+                 [calendars.y]\ntype = \"caldav\"\nurl = \"https://b\"\ndefault = true",
+                "only one can be the default",
+            ),
+            ("[calendars.x]\ntype = \"ics\"", "missing field `url`"),
             ("[general\n", "line 1"),
         ] {
             let err = format!("{:#}", parse(text).unwrap_err());

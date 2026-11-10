@@ -88,6 +88,15 @@ enum Command {
     },
     /// Write events as an iCalendar (.ics) file, to stdout or FILE
     Export(ExportArgs),
+    /// Bring the [calendars] of the config in step: fetch feeds, sync CalDAV
+    /// both ways. Exits non-zero if any failed
+    Sync {
+        /// Only these calendars [default: all]
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
+    },
+    /// List the configured calendars and how their last sync went
+    Calendars,
     /// Check the database, its events and the config; exits non-zero on a failure
     Doctor,
     /// Copy the database, consistently even while it's in use [default: a
@@ -195,6 +204,10 @@ struct AddArgs {
     reminder: Option<String>,
     #[arg(long, default_value = "confirmed")]
     status: Status,
+    /// Put it in this writable calendar from [calendars] [default: the one
+    /// marked default, else local only]; "" for local only
+    #[arg(long, value_name = "NAME")]
+    calendar: Option<String>,
 }
 
 #[derive(Args)]
@@ -240,6 +253,10 @@ struct EditArgs {
     reminder: Option<String>,
     #[arg(long)]
     status: Option<Status>,
+    /// Move it to this writable calendar from [calendars]; "" makes it local
+    /// only (the next sync deletes it from the old calendar's server)
+    #[arg(long, value_name = "NAME", conflicts_with = "occurrence")]
+    calendar: Option<String>,
 }
 
 #[derive(Args)]
@@ -368,6 +385,8 @@ fn run_with(cli: Cli) -> Result<()> {
         }
         Some(Command::Import { path }) => import(&mut Db::open(&db_path)?, &path, tz),
         Some(Command::Export(args)) => export(&Db::open(&db_path)?, args),
+        Some(Command::Sync { names }) => sync(&mut Db::open(&db_path)?, &cfg, &names, tz),
+        Some(Command::Calendars) => calendars(&Db::open(&db_path)?, &cfg),
         Some(Command::Backup { path, keep }) => {
             let (file, removed) =
                 crate::maintenance::backup(&Db::open(&db_path)?, path.as_deref(), keep)?;
@@ -463,6 +482,8 @@ struct JsonOccurrence<'a> {
     reminder: Option<i64>,
     recurring: bool,
     modified: bool,
+    /// The `[calendars]` entry it syncs with; `null` for a local event
+    calendar: Option<&'a str>,
 }
 
 impl<'a> JsonOccurrence<'a> {
@@ -484,6 +505,7 @@ impl<'a> JsonOccurrence<'a> {
             reminder: o.reminder,
             recurring: o.recurring(),
             modified: o.modified,
+            calendar: o.calendar.as_deref(),
         }
     }
 }
@@ -694,6 +716,14 @@ fn add(db: &mut Db, args: AddArgs, tz: Tz, cfg: &Config) -> Result<()> {
     if let Some(r) = args.reminder.as_deref() {
         ev.reminder = time::parse_reminder(r)?;
     }
+    ev.calendar = match args.calendar.as_deref() {
+        Some("") => None,
+        Some(name) => {
+            cfg.writable_calendar(name)?;
+            Some(name.to_string())
+        }
+        None => cfg.default_calendar().map(str::to_string),
+    };
     let saved = db.insert(ev)?;
     emit(&format!("{}\n", saved.id))
 }
@@ -715,12 +745,16 @@ fn edit(db: &mut Db, args: EditArgs, tz: Tz, cfg: &Config) -> Result<()> {
         || args.rrule.is_some()
         || args.status.is_some()
         || args.reminder.is_some()
+        || args.calendar.is_some()
         || args.all_day
         || args.timed;
     ensure!(
         anything,
         "nothing to change; give --title, --start, --end, --category, ... (see vcal edit --help)"
     );
+    if let Some(name) = args.calendar.as_deref().filter(|n| !n.is_empty()) {
+        cfg.writable_calendar(name)?;
+    }
     let id = ev.id.clone();
     let default_duration = cfg.settings.default_duration;
     match args.occurrence {
@@ -775,6 +809,9 @@ fn edit_series(
     }
     if let Some(r) = &args.reminder {
         ev.reminder = time::parse_reminder(r)?;
+    }
+    if let Some(c) = &args.calendar {
+        ev.calendar = Some(c.clone()).filter(|c| !c.is_empty());
     }
     let had_exceptions = ev.is_recurring() && !db.exceptions(&ev.id)?.is_empty();
     let saved = db.update(ev)?;
@@ -880,6 +917,7 @@ struct JsonEvent<'a> {
     rrule: Option<&'a str>,
     status: Status,
     reminder: Option<i64>,
+    calendar: Option<&'a str>,
     created_ts: i64,
     updated_ts: i64,
     exceptions: Vec<JsonException>,
@@ -900,6 +938,7 @@ fn as_occurrence(ev: &Event) -> Occurrence {
         all_day: ev.all_day,
         status: ev.status,
         reminder: ev.reminder,
+        calendar: ev.calendar.clone(),
         modified: false,
     }
 }
@@ -938,6 +977,7 @@ fn show(db: &Db, id: &str, json: bool, upcoming: usize, tz: Tz, settings: &Setti
             rrule: ev.rrule.as_deref(),
             status: ev.status,
             reminder: ev.reminder,
+            calendar: ev.calendar.as_deref(),
             created_ts: ev.created,
             updated_ts: ev.updated,
             exceptions: exceptions
@@ -1007,6 +1047,9 @@ fn show(db: &Db, id: &str, json: bool, upcoming: usize, tz: Tz, settings: &Setti
     }
     if let Some(l) = &ev.location {
         field("location", l);
+    }
+    if let Some(c) = &ev.calendar {
+        field("calendar", c);
     }
     field("status", ev.status.as_str());
     if let Some(m) = ev.reminder {
@@ -1324,6 +1367,72 @@ fn import(db: &mut Db, path: &Path, tz: Tz) -> Result<()> {
     let (events, exceptions) = db.import(parsed.events, parsed.exceptions)?;
     eprintln!("imported {events} events, {exceptions} exceptions");
     Ok(())
+}
+
+fn sync(db: &mut Db, cfg: &Config, names: &[String], tz: Tz) -> Result<()> {
+    ensure!(
+        !cfg.calendars.is_empty(),
+        "no [calendars] configured (see `vcal config default` for examples)"
+    );
+    let outcomes = crate::sync::sync(db, cfg, names, tz)?;
+    let width = outcomes.iter().map(|o| o.name.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for o in &outcomes {
+        let _ = writeln!(out, "{:<width$}  {}", o.name, o.summary);
+    }
+    emit(&out)?;
+    for o in &outcomes {
+        for w in &o.warnings {
+            eprintln!("vcal: {}: {w}", o.name);
+        }
+    }
+    let failed: Vec<&str> = outcomes
+        .iter()
+        .filter(|o| o.failed)
+        .map(|o| o.name.as_str())
+        .collect();
+    ensure!(failed.is_empty(), "sync failed for {}", failed.join(", "));
+    Ok(())
+}
+
+fn calendars(db: &Db, cfg: &Config) -> Result<()> {
+    let known = db.calendars()?;
+    let mut out = String::new();
+    for c in &cfg.calendars {
+        let info = known.iter().find(|k| k.name == c.name);
+        let mut flags = vec![c.kind.name().to_string()];
+        if c.read_only {
+            flags.push("read-only".into());
+        }
+        if c.default {
+            flags.push("default".into());
+        }
+        let state = match info {
+            None => "never synced".to_string(),
+            Some(i) => {
+                let when = i.last_sync.map_or("never synced".to_string(), |t| {
+                    let ago = (time::now() - t).max(0) / 60;
+                    format!("synced {} ago", time::format_minutes(ago))
+                });
+                match &i.last_error {
+                    Some(e) => format!("{} events, {when}, FAILED: {e}", i.events),
+                    None => format!("{} events, {when}", i.events),
+                }
+            }
+        };
+        let _ = writeln!(
+            out,
+            "{}  ({})  {}\n    {}",
+            c.name,
+            flags.join(", "),
+            state,
+            crate::sync::http::redact(&c.url)
+        );
+    }
+    if cfg.calendars.is_empty() {
+        out.push_str("no [calendars] configured (see `vcal config default` for examples)\n");
+    }
+    emit(&out)
 }
 
 fn doctor(db_path: &Path, config_path: &Path) -> Result<()> {

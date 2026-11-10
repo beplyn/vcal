@@ -106,6 +106,7 @@ pub enum Field {
     Reminder,
     Repeat,
     Notes,
+    Calendar,
 }
 
 impl Field {
@@ -120,11 +121,12 @@ impl Field {
             Field::Reminder => "Reminder",
             Field::Repeat => "Repeat",
             Field::Notes => "Notes",
+            Field::Calendar => "Calendar",
         }
     }
 }
 
-const FIELDS: [Field; 9] = [
+const FIELDS: [Field; 10] = [
     Field::Title,
     Field::Start,
     Field::End,
@@ -134,6 +136,7 @@ const FIELDS: [Field; 9] = [
     Field::Reminder,
     Field::Repeat,
     Field::Notes,
+    Field::Calendar,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +171,10 @@ pub struct Form {
     pub reminder: TextInput,
     pub repeat: TextInput,
     pub notes: TextInput,
+    /// The `[calendars]` entry; empty for local only.
+    pub calendar: TextInput,
+    /// Whether to offer the Calendar field (some calendars are configured).
+    pub show_calendar: bool,
     pub focus: Field,
     pub error: Option<String>,
 }
@@ -194,6 +201,8 @@ impl Form {
             reminder: TextInput::default(),
             repeat: TextInput::default(),
             notes: TextInput::default(),
+            calendar: TextInput::default(),
+            show_calendar: false,
             focus: Field::Title,
             error: None,
         }
@@ -234,6 +243,7 @@ impl Form {
         f.reminder = TextInput::new(ev.reminder.map(time::format_minutes).unwrap_or_default());
         f.repeat = TextInput::new(ev.rrule.unwrap_or_default());
         f.notes = TextInput::new(ev.description);
+        f.calendar = TextInput::new(ev.calendar.unwrap_or_default());
         f
     }
 
@@ -268,6 +278,10 @@ impl Form {
                 !matches!(self.target, Target::Occurrence { .. })
                     || !matches!(f, Field::Repeat | Field::AllDay | Field::Reminder)
             })
+            .filter(|f| {
+                *f != Field::Calendar
+                    || (self.show_calendar && !matches!(self.target, Target::Occurrence { .. }))
+            })
             .collect()
     }
 
@@ -282,6 +296,7 @@ impl Form {
             Field::Reminder => &self.reminder,
             Field::Repeat => &self.repeat,
             Field::Notes => &self.notes,
+            Field::Calendar => &self.calendar,
         })
     }
 
@@ -296,6 +311,7 @@ impl Form {
             Field::Reminder => &mut self.reminder,
             Field::Repeat => &mut self.repeat,
             Field::Notes => &mut self.notes,
+            Field::Calendar => &mut self.calendar,
         })
     }
 
@@ -308,6 +324,7 @@ impl Form {
             Field::AllDay => "space to toggle",
             Field::Reminder => "before the start: 10m, 1h, 1d; empty for none",
             Field::Repeat => "RRULE, e.g. FREQ=WEEKLY;BYDAY=MO",
+            Field::Calendar => "a name from [calendars]; empty keeps it only here",
             _ => "",
         }
     }
@@ -425,6 +442,9 @@ impl Form {
             ev.location = Self::opt(&self.location);
             ev.description = self.notes.text.trim().to_string();
             ev.rrule = Self::opt(&self.repeat);
+            if self.show_calendar {
+                ev.calendar = Self::opt(&self.calendar);
+            }
             if !ev.all_day && ev.tzid.is_none() {
                 ev.tzid = Some(tz.name().to_string());
             }
@@ -596,6 +616,7 @@ mod tests {
             all_day: false,
             status: Default::default(),
             reminder: None,
+            calendar: None,
             modified: false,
         };
         let mut f = Form::edit_occurrence(ev, &occ, Tz::UTC);

@@ -8,5 +8,6 @@ pub mod maintenance;
 pub mod model;
 pub mod quick;
 pub mod settings;
+pub mod sync;
 pub mod time;
 pub mod tui;

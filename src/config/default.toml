@@ -139,3 +139,23 @@ base0F = "#a16946"
 # shift_earlier = ["<lt>"]
 # new_event = ["o"]
 # escape = ["<Esc>", "<C-c>", "v"]
+
+# Calendars from elsewhere, kept in step by `vcal sync`. Each is a table
+# [calendars.<name>]; nothing is configured by default. Examples:
+#
+# [calendars.holidays]
+#   type = "ics"                # a read-only feed: https://, webcal:// or a file
+#   url = "https://example.com/holidays.ics"
+#   category = "holiday"        # for events that come without one
+#
+# [calendars.proton]
+#   type = "proton"             # a Proton Calendar share link (read-only)
+#   url = "https://calendar.proton.me/api/calendar/v1/url/.../calendar.ics?CacheKey=...&PassphraseKey=..."
+#
+# [calendars.nextcloud]
+#   type = "caldav"             # two-way: Nextcloud, Radicale, Baïkal, ...
+#   url = "https://cloud.example.com/remote.php/dav/calendars/alice/personal/"
+#   username = "alice"
+#   password_command = "pass show nextcloud/vcal"   # or password_file = "~/.secrets/nc"
+#   default = true              # new events go here
+#   # read_only = true          # pull only

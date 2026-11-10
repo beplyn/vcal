@@ -61,6 +61,36 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (event_id, start_ts)
     );
     "#,
+    // 3: calendars synced from elsewhere (feeds, CalDAV) and what was synced
+    r#"
+    ALTER TABLE events ADD COLUMN calendar TEXT;
+    CREATE INDEX idx_events_calendar ON events (calendar) WHERE calendar IS NOT NULL;
+
+    -- the [calendars] the last sync saw; read_only ones refuse local edits
+    CREATE TABLE calendars (
+        name         TEXT PRIMARY KEY,
+        kind         TEXT NOT NULL,
+        read_only    INTEGER NOT NULL DEFAULT 0 CHECK (read_only IN (0, 1)),
+        -- a feed's ETag / Last-Modified, for conditional requests
+        etag         TEXT,
+        modified     TEXT,
+        last_sync_ts INTEGER,
+        last_error   TEXT
+    );
+
+    -- one row per event stored on a CalDAV server: where, its ETag, and the
+    -- event's updated_ts when it was last in step with the server. No
+    -- foreign key: a row whose event is gone is a deletion to push.
+    CREATE TABLE sync_items (
+        calendar  TEXT NOT NULL,
+        event_id  TEXT NOT NULL,
+        href      TEXT NOT NULL,
+        etag      TEXT,
+        synced_ts INTEGER NOT NULL,
+        PRIMARY KEY (calendar, event_id)
+    );
+    CREATE UNIQUE INDEX idx_sync_items_href ON sync_items (calendar, href);
+    "#,
 ];
 
 pub fn latest() -> i64 {

@@ -68,6 +68,8 @@ pub struct Event {
     pub status: Status,
     /// Minutes before the start to notify; `None` for no reminder.
     pub reminder: Option<i64>,
+    /// The `[calendars]` entry it syncs with; `None` for a local event.
+    pub calendar: Option<String>,
     pub created: i64,
     pub updated: i64,
 }
@@ -89,6 +91,7 @@ impl Event {
             rrule: None,
             status: Status::Confirmed,
             reminder: None,
+            calendar: None,
             created: now,
             updated: now,
         }
@@ -172,6 +175,8 @@ pub struct Occurrence {
     pub status: Status,
     /// Minutes before the start to notify, from the series.
     pub reminder: Option<i64>,
+    /// The series' calendar (see [`Event::calendar`]).
+    pub calendar: Option<String>,
     pub modified: bool,
 }
 
