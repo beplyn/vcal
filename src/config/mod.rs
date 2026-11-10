@@ -133,8 +133,9 @@ pub fn parse(text: &str) -> Result<Config> {
 
     let v = raw.views;
     if let Some(start) = v.start {
-        s.start_view = View::parse(&start)
-            .ok_or_else(|| anyhow!("[views] start: {start:?} must be month, week or day"))?;
+        s.start_view = View::parse(&start).ok_or_else(|| {
+            anyhow!("[views] start: {start:?} must be month, week, day or agenda")
+        })?;
     }
     if let Some(m) = v.slot_minutes {
         ensure!(

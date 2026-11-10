@@ -9,16 +9,19 @@ pub enum View {
     Month,
     Week,
     Day,
+    /// Upcoming events as a list, day by day
+    Agenda,
 }
 
 impl View {
-    pub const ALL: [View; 3] = [View::Month, View::Week, View::Day];
+    pub const ALL: [View; 4] = [View::Month, View::Week, View::Day, View::Agenda];
 
     pub fn name(self) -> &'static str {
         match self {
             View::Month => "Month",
             View::Week => "Week",
             View::Day => "Day",
+            View::Agenda => "Agenda",
         }
     }
 
@@ -94,5 +97,14 @@ impl Settings {
     /// One past the last visible slot.
     pub fn end_slot(&self) -> u32 {
         self.last_hour * 60 / self.slot_minutes
+    }
+}
+
+impl View {
+    /// Whether the view is laid out by whole days (month, agenda) rather
+    /// than by time slots (week, day): selections, moves and new events
+    /// then work in days.
+    pub fn by_days(self) -> bool {
+        matches!(self, View::Month | View::Agenda)
     }
 }

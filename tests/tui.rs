@@ -141,9 +141,11 @@ fn view_switching() {
     press(&mut a, "<Tab>");
     assert_eq!(a.view, View::Day);
     press(&mut a, "<Tab>");
+    assert_eq!(a.view, View::Agenda);
+    press(&mut a, "<Tab>");
     assert_eq!(a.view, View::Month);
     press(&mut a, "<S-Tab>");
-    assert_eq!(a.view, View::Day);
+    assert_eq!(a.view, View::Agenda);
     press(&mut a, "g2");
     assert_eq!(a.view, View::Week);
     press(&mut a, "g1");
@@ -755,4 +757,68 @@ fn quick_add_command() {
 
     press(&mut a, ":add tomorrow<CR>");
     assert!(a.message.as_ref().unwrap().error);
+}
+
+#[test]
+fn agenda_view() {
+    let mut a = app();
+    add(&mut a, "Standup", at(date(2026, 11, 9), 9, 30), 15);
+    add(&mut a, "Review", at(date(2026, 11, 9), 14, 0), 60);
+    add(&mut a, "Dentist", at(date(2026, 11, 12), 14, 0), 45);
+    add_all_day(&mut a, "Trip", date(2026, 11, 20));
+    // beyond the eight loaded weeks
+    add(&mut a, "Far away", at(date(2027, 3, 1), 10, 0), 60);
+
+    press(&mut a, "g4");
+    assert_eq!(a.view, View::Agenda);
+    let s = screen(&mut a, 90, 24);
+    assert!(s.contains("Agenda"), "{s}");
+    assert!(s.contains("Mon 9 Nov  today"), "{s}");
+    assert!(s.contains("▶ 09:30–09:45  Standup"), "{s}");
+    assert!(s.contains("Thu 12 Nov"), "{s}");
+    assert!(
+        !s.contains("Tue 10 Nov"),
+        "days without events are left out:\n{s}"
+    );
+
+    // j and k walk events across days
+    press(&mut a, "j");
+    assert_eq!(a.target().unwrap().title, "Review");
+    press(&mut a, "j");
+    assert_eq!(
+        (a.cursor, a.target().unwrap().title),
+        (date(2026, 11, 12), "Dentist".into())
+    );
+    press(&mut a, "2j");
+    assert_eq!(
+        a.target().unwrap().title,
+        "Far away",
+        "found past the loaded range"
+    );
+    assert_eq!(a.cursor, date(2027, 3, 1));
+    press(&mut a, "k");
+    assert_eq!(a.target().unwrap().title, "Trip");
+    // gg and G: the first and last event of the weeks shown, from the cursor's week
+    press(&mut a, "tgg");
+    assert_eq!(a.target().unwrap().title, "Standup");
+    press(&mut a, "G");
+    assert_eq!(
+        a.target().unwrap().title,
+        "Trip",
+        "Far away isn't loaded from here"
+    );
+
+    // an empty day under the cursor still shows, with a hint
+    press(&mut a, "t");
+    press(&mut a, "l");
+    let s = screen(&mut a, 90, 24);
+    assert!(s.contains("Tue 10 Nov"), "{s}");
+    assert!(s.contains("no events · o to add"), "{s}");
+
+    // Enter edits; o creates on the cursor's day
+    press(&mut a, "h<CR>");
+    assert_eq!(a.mode, Mode::Insert);
+    press(&mut a, "<Esc>");
+    press(&mut a, "<Tab>");
+    assert_eq!(a.view, View::Month, "Tab wraps around after the agenda");
 }

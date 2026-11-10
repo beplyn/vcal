@@ -5,12 +5,12 @@ vcal                              # month view, today
 vcal --view week --date tomorrow  # any <when> from cli.md
 ```
 
-Three views (Month, Week, Day), a command line, and these modes:
+Four views (Month, Week, Day, Agenda), a command line, and these modes:
 
 | Mode | Enter with | Leave with |
 |---|---|---|
 | Normal | (start) | |
-| Visual: select days (month) or a time range (week/day) | `v` | `Esc`, `v` |
+| Visual: select days (month, agenda) or a time range (week/day) | `v` | `Esc`, `v` |
 | Insert: the event dialog | `o`, `O`, `cc` | `Enter` saves, `Esc` discards |
 | Command | `:` | `Enter`, `Esc` |
 | Search: live filter on title, category, notes, location | `/` | `Enter` keeps the filter, `Esc` clears it |
@@ -23,13 +23,13 @@ currently in effect.
 
 | Keys | Action |
 |---|---|
-| `h` `j` `k` `l` / arrows | Move a day; `j`/`k` move a week in month view, a time slot in week/day |
+| `h` `j` `k` `l` / arrows | Move a day; `j`/`k` move a week in month view, a time slot in week/day, and to the next or previous event in the agenda |
 | `w` `b` | Forward / back a week |
 | `}` `{` | Forward / back a month |
 | `0` `$` | Start / end of the week |
-| `gg` `G` | First / last day of the month (week view: week; day view: first/last slot) |
+| `gg` `G` | First / last day of the month (week view: week; day view: first/last slot; agenda: first/last event shown) |
 | `t` `.` | Today, at the current hour |
-| `Tab` `S-Tab`, `g1` `g2` `g3` | Next / previous view; Month, Week, Day |
+| `Tab` `S-Tab`, `g1` `g2` `g3` `g4` | Next / previous view; Month, Week, Day, Agenda |
 | `Enter` | Focus the day's event list (`j`/`k` pick one); `Enter` again edits it |
 | `o` / `O` | New event at the cursor / new all-day event |
 | `dd` | Delete (asks to confirm; for a repeating event, asks: this occurrence or all) |
@@ -45,10 +45,20 @@ A count repeats a motion, as in Vim: `3l`, `2w`, `10j`, `3}`, `2n`. It also
 works for `>`/`<` in visual mode (`v3>`). `0` on its own is still start of the
 week; other actions ignore a count. Counts go up to 999.
 
+
+## The agenda
+
+`g4` (or `:agenda`, `--view agenda`) lists eight weeks of events, starting
+with the cursor's week. Each day that has events gets a heading, and so do
+today and the cursor's day. `j`/`k` step from event to event across days. At
+either end they look up to a year further, so `j` always reaches the next
+event. `Enter` edits the highlighted event, and `o`, `dd`, `cc`, `yy`, `p`
+and `/` work as in the other views. On a wide terminal, the right-hand pane
+shows the cursor day's events in detail.
 ## Visual mode
 
 Movement keys work as in Normal mode. `d`/`x` deletes the selected events,
-`y` copies them, `>` / `<` moves them a day (month view) or a slot (week/day
+`y` copies them, `>` / `<` moves them a day (month view, agenda) or a slot (week/day
 view), and `o` creates an event spanning the selection.
 
 ## Commands
@@ -58,7 +68,7 @@ view), and `o` creates an event spanning the selection.
 | `:q` `:wq` `:x` | Quit. Everything is saved as you go, so `:w` is a no-op |
 | `:jump <when>`, or just `:2026-12-24` | Go to a date |
 | `:today` | Go to today |
-| `:view month\|week\|day` | Switch view |
+| `:view month\|week\|day\|agenda` | Switch view |
 | `:import <file.ics>` | Import an iCalendar file |
 | `:add <words>`, `:a` | Create an event from one line: `:add Dentist tomorrow 14:00 45m @health` ([quick add](#quick-add)) |
 | `:export <file.ics>`, `:w <file.ics>` | Write every event to an iCalendar file |

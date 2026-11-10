@@ -21,6 +21,9 @@ use crate::time::{self, DAY};
 /// Counts are capped so `99999j` can't stall the UI.
 const MAX_COUNT: u32 = 999;
 
+/// How many days the agenda loads, from the start of the cursor's week.
+pub const AGENDA_DAYS: i64 = 56;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -332,6 +335,89 @@ impl App {
                 (first, first + Duration::days(7))
             }
             View::Day => (self.cursor, self.cursor + Duration::days(1)),
+            View::Agenda => {
+                let first = self.week_start(self.cursor);
+                (first, first + Duration::days(AGENDA_DAYS))
+            }
+        }
+    }
+
+    /// The agenda's entries in order: each `(day, index into day_events)`.
+    pub fn agenda_entries(&self) -> Vec<(NaiveDate, usize)> {
+        let (first, end) = self.visible_range();
+        first
+            .iter_days()
+            .take_while(|d| *d < end)
+            .flat_map(|d| (0..self.day_events(d).len()).map(move |i| (d, i)))
+            .collect()
+    }
+
+    /// `j`/`k` in the agenda: to the next or previous event, on whatever
+    /// day it is, looking up to a year past what's loaded.
+    fn agenda_step(&mut self, down: bool) {
+        let entries = self.agenda_entries();
+        let here = (self.cursor, self.event_idx);
+        let has_here = !self.day_events(self.cursor).is_empty();
+        let found = if down {
+            entries.iter().find(|e| {
+                if has_here {
+                    **e > here
+                } else {
+                    e.0 > self.cursor
+                }
+            })
+        } else {
+            entries.iter().rev().find(|e| {
+                if has_here {
+                    **e < here
+                } else {
+                    e.0 < self.cursor
+                }
+            })
+        };
+        if let Some(&(d, i)) = found {
+            self.cursor = d;
+            self.event_idx = i;
+            return;
+        }
+        // past the loaded weeks: ask the database
+        let (first, end) = self.visible_range();
+        let (from, to) = if down {
+            (end, end + Duration::days(366))
+        } else {
+            (first - Duration::days(366), first)
+        };
+        let tz = self.tz;
+        let found = self
+            .db
+            .occurrences(
+                time::local_midnight(from, tz),
+                time::local_midnight(to, tz),
+                tz,
+                false,
+            )
+            .map(|list| {
+                let mut hits = list.into_iter().filter(|o| self.passes_filter(o));
+                if down { hits.next() } else { hits.next_back() }
+            });
+        match found {
+            Ok(Some(o)) => {
+                let day = if o.all_day {
+                    time::floating_date(o.start)
+                } else {
+                    time::local_date(o.start, tz)
+                };
+                self.cursor = day;
+                self.refresh();
+                let list = self.day_events(day);
+                self.event_idx = list.iter().position(|e| **e == o).unwrap_or(0);
+            }
+            Ok(None) => self.info(if down {
+                "no later events within a year"
+            } else {
+                "no earlier events within a year"
+            }),
+            Err(e) => self.error(format!("{e:#}")),
         }
     }
 
@@ -397,7 +483,7 @@ impl App {
     /// or in week/day grids the timed event under the cursor slot.
     pub fn target(&self) -> Option<Occurrence> {
         let list = self.day_events(self.cursor);
-        if self.focus == Focus::Events || self.view == View::Month {
+        if self.focus == Focus::Events || self.view.by_days() {
             return list
                 .get(self.event_idx.min(list.len().saturating_sub(1)))
                 .map(|o| (*o).clone());
@@ -426,7 +512,7 @@ impl App {
         let Some((lo, hi)) = self.selection() else {
             return false;
         };
-        if self.view == View::Month {
+        if self.view.by_days() {
             (lo.date..=hi.date).contains(&p.date)
         } else {
             lo <= p && p <= hi
@@ -440,7 +526,7 @@ impl App {
         let Some((lo, hi)) = self.selection() else {
             return Ok(vec![]);
         };
-        let (from, to) = if self.view == View::Month {
+        let (from, to) = if self.view.by_days() {
             (
                 time::local_midnight(lo.date, self.tz),
                 time::local_midnight(hi.date + Duration::days(1), self.tz),
@@ -451,7 +537,7 @@ impl App {
                 self.slot_ts(hi.date, hi.slot + 1),
             )
         };
-        let month = self.view == View::Month;
+        let month = self.view.by_days();
         Ok(self
             .db
             .occurrences(from, to, self.tz, false)?
@@ -639,6 +725,7 @@ impl App {
         }
         match self.view {
             View::Month => self.move_days(if down { 7 } else { -7 }),
+            View::Agenda => self.agenda_step(down),
             View::Week | View::Day => {
                 let slot = if down {
                     self.slot + 1
@@ -701,18 +788,35 @@ impl App {
                             self.clamp_slot(0)
                         }
                     }
+                    // the first or last event loaded
+                    View::Agenda => {
+                        let entries = self.agenda_entries();
+                        let pick = if last {
+                            entries.last()
+                        } else {
+                            entries.first()
+                        };
+                        if let Some(&(d, i)) = pick {
+                            self.cursor = d;
+                            self.event_idx = i;
+                        }
+                        return;
+                    }
                 }
                 self.event_idx = 0;
             }
             Action::Today => self.goto_today(),
             Action::ViewNext | Action::ViewPrev => {
                 let i = View::ALL.iter().position(|v| *v == self.view).unwrap_or(0);
-                let step = if action == Action::ViewNext { 1 } else { 2 };
-                self.set_view(View::ALL[(i + step) % 3]);
+                let n = View::ALL.len();
+                let step = if action == Action::ViewNext { 1 } else { n - 1 };
+                self.set_view(View::ALL[(i + step) % n]);
             }
             Action::ViewMonth => self.set_view(View::Month),
             Action::ViewWeek => self.set_view(View::Week),
             Action::ViewDay => self.set_view(View::Day),
+            Action::ViewAgenda => self.set_view(View::Agenda),
+            Action::Focus if self.view == View::Agenda => self.perform(Action::Change),
             Action::Focus => {
                 if self.focus == Focus::Events {
                     self.perform(Action::Change);
@@ -826,14 +930,14 @@ impl App {
 
     fn open_new(&mut self) {
         let dur = self.settings.default_duration;
-        let form = match (self.selection(), self.view) {
-            (Some((lo, hi)), View::Month) => Form::new_all_day(lo.date, hi.date),
+        let form = match (self.selection(), self.view.by_days()) {
+            (Some((lo, hi)), true) => Form::new_all_day(lo.date, hi.date),
             (Some((lo, hi)), _) => Form::new_timed(
                 self.slot_ts(lo.date, lo.slot),
                 self.slot_ts(hi.date, hi.slot + 1),
                 self.tz,
             ),
-            (None, View::Month) => {
+            (None, true) => {
                 let start = if self.cursor == self.today() {
                     // the next slot boundary from now
                     self.slot_ts(self.cursor, self.slot_of(self.now) + 1)
@@ -997,7 +1101,7 @@ impl App {
         };
         let days = (self.cursor - base_date).num_days();
         // Week/day views paste at the cursor slot; month view keeps the time of day.
-        let instant_shift = (self.view != View::Month && !base.all_day)
+        let instant_shift = (!self.view.by_days() && !base.all_day)
             .then(|| self.slot_ts(self.cursor, self.slot) - base.start);
         let copies: Vec<Event> = self
             .yanked
@@ -1049,7 +1153,7 @@ impl App {
             Err(e) => return self.error(format!("{e:#}")),
         };
         let sign = if later { steps } else { -steps };
-        let month = self.view == View::Month;
+        let month = self.view.by_days();
         let delta = sign
             * if month {
                 DAY
@@ -1208,9 +1312,11 @@ impl App {
             "today" => self.goto_today(),
             "view" => match View::parse(arg) {
                 Some(v) => self.set_view(v),
-                None => self.error("usage: :view month|week|day"),
+                None => self.error("usage: :view month|week|day|agenda"),
             },
-            "month" | "week" | "day" => self.set_view(View::parse(cmd).unwrap_or_default()),
+            "month" | "week" | "day" | "agenda" => {
+                self.set_view(View::parse(cmd).unwrap_or_default())
+            }
             "import" if !arg.is_empty() => self.import(arg),
             "a" | "add" if !arg.is_empty() => self.quick_add(arg),
             "a" | "add" => self.error("usage: :add Dentist tomorrow 14:00 45m @health"),

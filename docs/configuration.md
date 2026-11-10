@@ -39,7 +39,7 @@ wrong. `vcal config check` validates the file without starting anything.
 
 | Key | Default | |
 |---|---|---|
-| `start` | `"month"` | View on startup: `"month"`, `"week"` or `"day"` |
+| `start` | `"month"` | View on startup: `"month"`, `"week"`, `"day"` or `"agenda"` |
 | `slot_minutes` | `30` | Week/day grid granularity: 15, 30 or 60 |
 | `first_hour`, `last_hour` | `0`, `24` | Hours the week/day grids cover (first inclusive, last exclusive) |
 | `new_event_hour` | `9` | Start hour of events created from the month view |

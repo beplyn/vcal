@@ -22,7 +22,7 @@ default_duration = "1h"
 # database_path = "~/.local/share/calendar/events.db"
 
 [views]
-# View on startup: "month", "week" or "day".
+# View on startup: "month", "week", "day" or "agenda".
 start = "month"
 
 # Week/day grid granularity in minutes: 15, 30 or 60.
@@ -96,6 +96,7 @@ base0F = "#a16946"
 # view_month = ["g1"]
 # view_week = ["g2"]
 # view_day = ["g3"]
+# view_agenda = ["g4"]
 # focus = ["<CR>"]
 # new_event = ["o"]
 # new_all_day = ["O"]

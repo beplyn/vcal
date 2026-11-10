@@ -53,6 +53,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
             render_timeline(f.buffer_mut(), timeline, app, &[app.cursor]);
             render_agenda(f, agenda, app, true);
         }
+        View::Agenda => {
+            if body.width >= 100 {
+                let [list, detail] =
+                    Layout::horizontal([Constraint::Min(0), Constraint::Length(44)]).areas(body);
+                render_agenda_list(f.buffer_mut(), list, app);
+                render_agenda(f, detail, app, true);
+            } else {
+                render_agenda_list(f.buffer_mut(), body, app);
+            }
+        }
     }
     render_status(f.buffer_mut(), status, app);
     render_line(f, line, app);
@@ -150,6 +160,11 @@ fn render_header(buf: &mut Buffer, area: Rect, app: &App) {
             )
         }
         View::Day => c.format("%A %-d %B %Y").to_string(),
+        View::Agenda => {
+            let (first, end) = app.visible_range();
+            let last = end - Duration::days(1);
+            format!("{} – {}", first.format("%-d %b"), last.format("%-d %b %Y"))
+        }
     };
     let w = title.chars().count() as u16 + 1;
     if area.width > x - area.x + w {
@@ -590,6 +605,103 @@ fn render_agenda(f: &mut Frame, area: Rect, app: &App, detailed: bool) {
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0))
         .render(inner, f.buffer_mut());
+}
+
+// --- agenda view ---------------------------------------------------------
+
+/// The loaded weeks as a list: a heading per day that has events (and for
+/// today and the cursor's day), then one line per event. The cursor's event
+/// is highlighted and kept on screen.
+fn render_agenda_list(buf: &mut Buffer, area: Rect, app: &App) {
+    let t = &app.theme;
+    let (first, end) = app.visible_range();
+    let today = app.today();
+    let target = app.target();
+    // (line, highlighted)
+    let mut lines: Vec<(Line, bool)> = Vec::new();
+    let mut cursor_line = 0;
+    for day in first.iter_days().take_while(|d| *d < end) {
+        let events = app.day_events(day);
+        if events.is_empty() && day != today && day != app.cursor {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push((Line::raw(""), false));
+        }
+        let mut head = vec![Span::styled(
+            day.format("%a %-d %b").to_string(),
+            if day == app.cursor {
+                t.title()
+            } else {
+                t.text().add_modifier(Modifier::BOLD)
+            },
+        )];
+        if day == today {
+            head.push(Span::styled("  today", Style::new().fg(t.today())));
+        }
+        if day.weekday() == app.settings.week_start && day != first {
+            // a quiet week marker
+            head.push(Span::styled(
+                format!("  · week {}", day.iso_week().week()),
+                t.muted(),
+            ));
+        }
+        lines.push((Line::from(head), false));
+        if events.is_empty() {
+            let here = day == app.cursor;
+            if here {
+                cursor_line = lines.len();
+            }
+            let hint = if app.filter.is_some() {
+                "  no matches"
+            } else {
+                "  no events · o to add"
+            };
+            lines.push((Line::from(Span::styled(hint, t.muted())), here));
+            continue;
+        }
+        for o in events {
+            let selected = day == app.cursor && target.as_ref() == Some(o);
+            if selected {
+                cursor_line = lines.len();
+            }
+            let mut spans = vec![
+                Span::styled(
+                    if selected { "▶ " } else { "  " },
+                    Style::new().fg(t.accent()),
+                ),
+                Span::styled(format!("{:<13}", time_range(app, o)), t.muted()),
+                Span::styled(
+                    o.title.clone(),
+                    occ_style(app, o).add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if let Some(c) = &o.category {
+                spans.push(Span::styled(format!(" [{c}]"), Style::new().fg(t.tag())));
+            }
+            if o.recurring() {
+                spans.push(Span::styled(" ↻", Style::new().fg(t.tag())));
+            }
+            if let Some(l) = &o.location {
+                spans.push(Span::styled(format!("  @ {l}"), t.muted()));
+            }
+            lines.push((Line::from(spans), selected));
+        }
+    }
+    let rows = area.height as usize;
+    // keep the cursor's line a few rows from the bottom edge
+    let skip = (cursor_line + 4)
+        .saturating_sub(rows)
+        .min(cursor_line.saturating_sub(1));
+    for (row, (line, highlighted)) in lines.into_iter().skip(skip).take(rows).enumerate() {
+        let y = area.y + row as u16;
+        let rect = Rect::new(area.x, y, area.width, 1);
+        if highlighted {
+            buf.set_style(rect, Style::new().bg(t.selection()));
+        }
+        let pad = Rect::new(area.x + 1, y, area.width.saturating_sub(1), 1);
+        line.render(pad, buf);
+    }
 }
 
 // --- week / day timeline -------------------------------------------------
