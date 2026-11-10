@@ -82,6 +82,32 @@ in
       package = lib.mkPackageOption pkgs "libnotify" { };
     };
 
+    sync =
+    {
+      enable = lib.mkEnableOption ''
+        a systemd user timer that runs `vcal sync`, keeping the `[calendars]`
+        of {option}`settings` (feeds, Proton links, CalDAV) in step'';
+
+      interval = lib.mkOption
+      {
+        type = lib.types.str;
+        default = "15min";
+        example = "1h";
+        description = "How often to sync, as a systemd time span.";
+      };
+
+      packages = lib.mkOption
+      {
+        type = lib.types.listOf lib.types.package;
+        default = [ ];
+        example = lib.literalExpression "[ pkgs.pass ]";
+        description = ''
+          Put on the PATH of the sync service, for what `password_command`
+          runs (`sh` and coreutils are always there).
+        '';
+      };
+    };
+
     stylix.enable = lib.mkOption
     {
       type = lib.types.bool;
@@ -104,38 +130,67 @@ in
     home.packages = [ cfg.package ];
     xdg.configFile."calendar/config.toml".source = toml.generate "vcal-config.toml" generated;
 
-    systemd.user = lib.mkIf cfg.notify.enable
-    {
-      services.vcal-notify =
+    systemd.user = lib.mkMerge
+    [
+      (lib.mkIf cfg.notify.enable
       {
-        Unit =
+        services.vcal-notify =
         {
-          Description = "Send vcal event reminders";
-          After = [ "graphical-session.target" ];
-          PartOf = [ "graphical-session.target" ];
+          Unit =
+          {
+            Description = "Send vcal event reminders";
+            After = [ "graphical-session.target" ];
+            PartOf = [ "graphical-session.target" ];
+          };
+          Service =
+          {
+            Type = "oneshot";
+            ExecStart = "${lib.getExe cfg.package} notify";
+            Environment = [ "PATH=${lib.makeBinPath [ cfg.notify.package ]}" ];
+          };
         };
-        Service =
-        {
-          Type = "oneshot";
-          ExecStart = "${lib.getExe cfg.package} notify";
-          Environment = [ "PATH=${lib.makeBinPath [ cfg.notify.package ]}" ];
-        };
-      };
 
-      timers.vcal-notify =
+        timers.vcal-notify =
+        {
+          Unit =
+          {
+            Description = "Check vcal reminders every minute";
+            PartOf = [ "graphical-session.target" ];
+          };
+          Timer =
+          {
+            OnCalendar = "*:*:00";
+            AccuracySec = "5s";
+          };
+          Install.WantedBy = [ "graphical-session.target" ];
+        };
+      })
+
+      (lib.mkIf cfg.sync.enable
       {
-        Unit =
+        services.vcal-sync =
         {
-          Description = "Check vcal reminders every minute";
-          PartOf = [ "graphical-session.target" ];
+          Unit.Description = "Sync vcal's calendars";
+          Service =
+          {
+            Type = "oneshot";
+            ExecStart = "${lib.getExe cfg.package} sync";
+            Environment =
+              [ "PATH=${lib.makeBinPath ([ pkgs.bash pkgs.coreutils ] ++ cfg.sync.packages)}" ];
+          };
         };
-        Timer =
+
+        timers.vcal-sync =
         {
-          OnCalendar = "*:*:00";
-          AccuracySec = "5s";
+          Unit.Description = "Sync vcal's calendars every ${cfg.sync.interval}";
+          Timer =
+          {
+            OnStartupSec = "1min";
+            OnUnitActiveSec = cfg.sync.interval;
+          };
+          Install.WantedBy = [ "timers.target" ];
         };
-        Install.WantedBy = [ "graphical-session.target" ];
-      };
-    };
+      })
+    ];
   };
 }

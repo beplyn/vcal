@@ -77,6 +77,23 @@ let
     };
   };
 
+  withSync = home
+  {
+    programs.vcal =
+    {
+      enable = true;
+      sync = { enable = true; interval = "1h"; packages = [ pkgs.hello ]; };
+      settings.calendars.nc =
+      {
+        type = "caldav";
+        url = "https://cloud.example.com/remote.php/dav/calendars/a/personal/";
+        username = "a";
+        password_command = "hello";
+        default = true;
+      };
+    };
+  };
+
   # the spec's name for the options
   alias = home { programs.vim-calendar.enable = true; };
 
@@ -99,7 +116,7 @@ in
     man=${vcal}/share/man/man1/vcal.1.gz
     gzip -t "$man"
     zcat "$man" | grep -q '^\.TH vcal 1'
-    for sub in query add edit rm next notify import config; do
+    for sub in query add edit rm next notify import export sync calendars doctor backup show config; do
       zcat "$man" | grep -q "$sub" || { echo "man page lacks $sub"; exit 1; }
     done
 
@@ -145,6 +162,21 @@ in
       "the reminder timer isn't started with the session";
     assert lib.assertMsg (!(off.timers ? vcal-notify)) "the reminder timer is on by default";
     pkgs.runCommandLocal "vcal-hm-notify" { } "touch $out";
+
+  hm-sync =
+    let
+      user = withSync.config.systemd.user;
+      exec = lib.concatStringsSep " " (lib.toList user.services.vcal-sync.Service.ExecStart);
+      env = lib.concatStringsSep " " user.services.vcal-sync.Service.Environment;
+    in
+    assert lib.assertMsg (lib.hasSuffix "/bin/vcal sync" exec) "unexpected ExecStart: ${exec}";
+    assert lib.assertMsg (user.timers.vcal-sync.Timer.OnUnitActiveSec == "1h") "interval not applied";
+    assert lib.assertMsg (lib.hasInfix "-hello-" (builtins.unsafeDiscardStringContext env)) "sync.packages not on PATH";
+    assert lib.assertMsg (!(vanilla.config.systemd.user.timers ? vcal-sync)) "the sync timer is on by default";
+    checkConfig "hm-sync" withSync ''
+      grep -qx '\[calendars.nc\]' "$f"
+      grep -qx 'default = true' "$f"
+    '';
 
   hm-alias-and-assertion =
     assert lib.assertMsg (lib.elem vcal alias.config.home.packages) "programs.vim-calendar doesn't alias programs.vcal";
