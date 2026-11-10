@@ -394,7 +394,8 @@ fn vevent(
     }
     ev.end = ev.end.max(ev.start);
     if let Stamp::At(_, zone) = start {
-        ev.tzid = Some(zone.unwrap_or(zones.local).name().to_string());
+        // a UTC DTSTART (…Z) repeats in UTC; floating times already carry the local zone
+        ev.tzid = Some(zone.unwrap_or(Tz::UTC).name().to_string());
     }
     ev.rrule = one("RRULE").map(|p| p.value.clone());
 
@@ -499,6 +500,16 @@ DTSTART;TZID=Nowhere Time:20261112T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         );
         assert!(p.warnings[1].contains("read as local time"));
         assert_eq!(p.events[2].start, nine);
+    }
+
+    #[test]
+    fn utc_starts_repeat_in_utc() {
+        let file = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nSUMMARY:Sync\r\n\
+DTSTART:20261019T080000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:f\r\nSUMMARY:Floating\r\nDTSTART:20261019T080000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let p = parse(file, chrono_tz::Europe::Berlin).unwrap();
+        assert_eq!(p.events[0].tzid.as_deref(), Some("UTC"));
+        assert_eq!(p.events[1].tzid.as_deref(), Some("Europe/Berlin"));
     }
 
     #[test]
