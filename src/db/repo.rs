@@ -212,6 +212,10 @@ pub(super) fn write_exception(conn: &Connection, mut exc: Exception) -> Result<(
         (None, None) => {}
     }
     if let (Some(s), Some(e)) = (exc.start, exc.end) {
+        ensure!(
+            !ev.all_day || (s % DAY == 0 && e % DAY == 0 && e > s),
+            "an occurrence of an all-day event must span whole days"
+        );
         note_span(conn, e - s)?;
     }
     conn.execute(
