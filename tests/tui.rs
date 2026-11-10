@@ -894,3 +894,81 @@ fn undo_and_redo() {
     );
     assert_eq!(a.db.get(&gym.id).unwrap().unwrap().title, "Swim");
 }
+
+#[test]
+fn move_and_resize_with_keys() {
+    let mut a = app();
+    let mon = date(2026, 11, 9);
+    let ev = add(&mut a, "Dentist", at(mon, 14, 0), 60);
+    let span = |a: &App| {
+        let e = a.db.get(&ev.id).unwrap().unwrap();
+        (e.start, e.end)
+    };
+
+    // week view: slots of 30 minutes, under the cursor
+    press(&mut a, "g2");
+    a.slot = a.slot_of(at(mon, 14, 0));
+    press(&mut a, "J");
+    assert_eq!(span(&a), (at(mon, 14, 30), at(mon, 15, 30)));
+    assert_eq!(a.slot, a.slot_of(at(mon, 14, 30)), "the cursor follows");
+    press(&mut a, "3K");
+    assert_eq!(span(&a), (at(mon, 13, 0), at(mon, 14, 0)));
+    press(&mut a, ">>");
+    assert_eq!(span(&a), (at(mon, 13, 0), at(mon, 15, 0)));
+    press(&mut a, "3<lt>");
+    assert_eq!(span(&a), (at(mon, 13, 0), at(mon, 13, 30)));
+    press(&mut a, "<lt>");
+    assert!(
+        a.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("can't get shorter than 30m")
+    );
+    press(&mut a, "u");
+    assert_eq!(
+        span(&a),
+        (at(mon, 13, 0), at(mon, 15, 0)),
+        "3< was one change; the refused < wasn't recorded"
+    );
+
+    // month view: days, keeping the time of day
+    press(&mut a, "g1");
+    press(&mut a, "2J");
+    assert_eq!(
+        span(&a),
+        (at(date(2026, 11, 11), 13, 0), at(date(2026, 11, 11), 15, 0))
+    );
+    assert_eq!(a.cursor, date(2026, 11, 11));
+    assert_eq!(a.target().unwrap().event_id, ev.id);
+
+    // an all-day event grows by days
+    let trip = add_all_day(&mut a, "Trip", date(2026, 11, 20));
+    press(&mut a, ":2026-11-20<CR>");
+    press(&mut a, "2>");
+    assert_eq!(a.db.get(&trip.id).unwrap().unwrap().duration(), 3 * DAY);
+
+    // a repeating event: only this occurrence moves
+    let mut gym = Event::new("Gym", at(mon, 18, 0), at(mon, 19, 0));
+    gym.rrule = Some("FREQ=DAILY".into());
+    a.db.insert(gym.clone()).unwrap();
+    a.reload();
+    press(&mut a, ":2026-11-10<CR>");
+    press(&mut a, "J");
+    assert_eq!(
+        titles_on(&a, date(2026, 11, 11))
+            .iter()
+            .filter(|t| *t == "Gym")
+            .count(),
+        2
+    );
+    assert_eq!(
+        titles_on(&a, date(2026, 11, 10))
+            .iter()
+            .filter(|t| *t == "Gym")
+            .count(),
+        0
+    );
+    assert_eq!(a.db.exceptions(&gym.id).unwrap().len(), 1);
+    assert_eq!(a.db.get(&gym.id).unwrap().unwrap().start, gym.start);
+}

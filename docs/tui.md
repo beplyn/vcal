@@ -36,6 +36,8 @@ currently in effect.
 | `cc` | Edit (same choice for repeating events) |
 | `yy` / `p` | Copy the event / paste a copy at the cursor |
 | `u` / `C-r` | Undo / redo the last change made in this window (up to 100; counts work: `3u`). Undo refuses if the events changed elsewhere since |
+| `J` / `K` | Move the event under the cursor a slot later / earlier (a day in month and agenda views, and for all-day events). A repeating event moves just this occurrence |
+| `>` / `<` | Make the event a slot (all-day: a day) longer / shorter |
 | `/`, `n` `N` | Search; next / previous match (up to a year away) |
 | `:` | Command line |
 | `?` | All key bindings |

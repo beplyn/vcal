@@ -138,6 +138,29 @@ pub struct App {
     database_path: Option<PathBuf>,
 }
 
+/// Gives an occurrence new times: the event itself when it doesn't repeat,
+/// otherwise just this occurrence, keeping its other changes.
+fn set_span(db: &mut Db, o: &Occurrence, start: i64, end: i64) -> Result<()> {
+    match o.original_start {
+        Some(at) => {
+            let x = db
+                .exceptions(&o.event_id)?
+                .into_iter()
+                .find(|e| e.original_start == at && o.modified);
+            let mut x = x.unwrap_or_else(|| Exception::modified(&o.event_id, at));
+            x.start = Some(start);
+            x.end = Some(end);
+            db.set_exception(x)
+        }
+        None => {
+            let mut ev = db.get(&o.event_id)?.context("event vanished")?;
+            ev.start = start;
+            ev.end = end;
+            db.update(ev).map(|_| ())
+        }
+    }
+}
+
 /// A path typed on the command line, with a leading `~/` expanded.
 fn expand_home(arg: &str) -> PathBuf {
     match arg.strip_prefix("~/") {
@@ -815,6 +838,10 @@ impl App {
             // in one step, so 3} from Jan 31 lands on Apr 30, not Apr 28
             Action::MonthNext => self.move_months(count as i32),
             Action::MonthPrev => self.move_months(-(count as i32)),
+            Action::MoveLater => self.nudge(false, n),
+            Action::MoveEarlier => self.nudge(false, -n),
+            Action::Lengthen => self.nudge(true, n),
+            Action::Shorten => self.nudge(true, -n),
             Action::ShiftLater | Action::ShiftEarlier => {
                 self.shift(action == Action::ShiftLater, n)
             }
@@ -1018,6 +1045,10 @@ impl App {
                 None => self.info("no event here"),
             },
             Action::Paste => self.paste(),
+            Action::MoveLater => self.nudge(false, 1),
+            Action::MoveEarlier => self.nudge(false, -1),
+            Action::Lengthen => self.nudge(true, 1),
+            Action::Shorten => self.nudge(true, -1),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
             Action::ShiftLater | Action::ShiftEarlier => {
@@ -1313,30 +1344,7 @@ impl App {
         let ids = list.iter().map(|o| o.event_id.clone()).collect();
         let moved = self.record(ids, |db| {
             for o in &list {
-                match o.original_start {
-                    Some(at) => {
-                        let mut x = Exception::modified(&o.event_id, at);
-                        if o.modified {
-                            // keep earlier per-occurrence edits
-                            if let Some(prev) = db
-                                .exceptions(&o.event_id)?
-                                .into_iter()
-                                .find(|e| e.original_start == at)
-                            {
-                                x = prev;
-                            }
-                        }
-                        x.start = Some(o.start + delta);
-                        x.end = Some(o.end + delta);
-                        db.set_exception(x)?;
-                    }
-                    None => {
-                        let mut ev = db.get(&o.event_id)?.context("event vanished")?;
-                        ev.start += delta;
-                        ev.end += delta;
-                        db.update(ev)?;
-                    }
-                }
+                set_span(db, o, o.start + delta, o.end + delta)?;
             }
             Ok(format!(
                 "moved {} event(s) {}",
@@ -1358,6 +1366,85 @@ impl App {
                 self.cursor = here.date;
                 self.slot = here.slot;
             }
+        }
+    }
+
+    /// `J`/`K` (move) and `>`/`<` (resize) in normal mode, on the event the
+    /// cursor is on, by `steps` slots, or days for all-day events and for
+    /// moves in the month and agenda views. A repeating event changes only
+    /// this occurrence.
+    fn nudge(&mut self, resize: bool, steps: i64) {
+        let Some(o) = self.target() else {
+            return self.info("no event here");
+        };
+        let slot = i64::from(self.settings.slot_minutes) * 60;
+        let tz = self.tz;
+        let (start, end) = if resize {
+            let unit = if o.all_day { DAY } else { slot };
+            let end = o.end + steps * unit;
+            if end - o.start < unit {
+                return self.error(format!(
+                    "\"{}\" can't get shorter than {}",
+                    o.title,
+                    if o.all_day {
+                        "a day".to_string()
+                    } else {
+                        time::format_minutes(unit / 60)
+                    }
+                ));
+            }
+            (o.start, end)
+        } else if o.all_day {
+            (o.start + steps * DAY, o.end + steps * DAY)
+        } else if self.view.by_days() {
+            // whole days keep the time of day across DST changes
+            let shift = |ts: i64| {
+                time::resolve_local(
+                    time::in_tz(ts, tz).naive_local() + Duration::days(steps),
+                    tz,
+                )
+            };
+            let start = shift(o.start);
+            (start, start + (o.end - o.start))
+        } else {
+            (o.start + steps * slot, o.end + steps * slot)
+        };
+        let what = if o.recurring() {
+            "this occurrence of "
+        } else {
+            ""
+        };
+        let verb = match (resize, steps > 0) {
+            (true, true) => "lengthened",
+            (true, false) => "shortened",
+            (false, true) => "moved later",
+            (false, false) => "moved earlier",
+        };
+        let label = format!("{verb} {what}\"{}\"", o.title);
+        let target = o.clone();
+        if !self.record(vec![o.event_id.clone()], |db| {
+            set_span(db, &target, start, end).map(|()| label)
+        }) {
+            return;
+        }
+        // follow it, so another J keeps moving the same event
+        if !resize {
+            self.cursor = if o.all_day {
+                time::floating_date(start)
+            } else {
+                time::local_date(start, tz)
+            };
+            if !o.all_day && !self.view.by_days() {
+                self.slot = self.clamp_slot(self.slot_of(start));
+            }
+        }
+        self.refresh();
+        if let Some(i) = self
+            .day_events(self.cursor)
+            .iter()
+            .position(|e| e.event_id == o.event_id && e.original_start == o.original_start)
+        {
+            self.event_idx = i;
         }
     }
 
