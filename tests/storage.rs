@@ -400,6 +400,35 @@ fn dropping_the_rule_drops_exceptions() {
 }
 
 #[test]
+fn reimport_follows_the_feed() {
+    let feed = |exdate: &str| {
+        format!(
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:weekly@x\nSUMMARY:Weekly\n\
+DTSTART;TZID=Europe/Berlin:20261019T090000\nDTEND;TZID=Europe/Berlin:20261019T100000\n\
+RRULE:FREQ=WEEKLY\n{exdate}BEGIN:VALARM\nTRIGGER:-PT10M\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+    };
+    let mut db = Db::open_in_memory().unwrap();
+    let import = |db: &mut Db, text: &str| {
+        let parsed = vcal::ics::parse(text, BERLIN).unwrap();
+        db.import(parsed.events, parsed.exceptions).unwrap()
+    };
+    import(
+        &mut db,
+        &feed("EXDATE;TZID=Europe/Berlin:20261026T090000\n"),
+    );
+    assert!(day_titles(&db, date(2026, 10, 26), BERLIN).is_empty());
+    let created = db.get("weekly@x").unwrap().unwrap().created;
+
+    // the organiser un-cancelled it
+    import(&mut db, &feed(""));
+    assert_eq!(day_titles(&db, date(2026, 10, 26), BERLIN), ["Weekly"]);
+    let ev = db.get("weekly@x").unwrap().unwrap();
+    assert_eq!(ev.reminder, Some(10));
+    assert_eq!(ev.created, created, "an update, not a new event");
+}
+
+#[test]
 fn reminders_and_notified_marks() {
     let mut db = Db::open_in_memory().unwrap();
     let start = at(BERLIN, 2026, 11, 9, 9);

@@ -77,6 +77,12 @@ For example, the next event's title for a status bar:
 vcal query --from now --to +1d --format json | jq -r '.[0].title // empty'
 ```
 
+## Importing
+
+`vcal import` keeps each event's UID as its id, so importing a newer copy of
+the same file updates events in place. The file wins for the events it
+contains: their cancelled and moved occurrences are replaced by the file's.
+
 ## Status bars: `vcal next`
 
 `vcal next` prints the next timed event in the coming week, or nothing (with

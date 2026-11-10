@@ -296,9 +296,11 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Upserts events (by id) then their exceptions in one transaction.
-    /// Exceptions whose series is missing or doesn't repeat are skipped.
-    /// Returns (events written, exceptions written).
+    /// Upserts events (by id) then their exceptions in one transaction. The
+    /// file is the source of truth for the events in it: their earlier
+    /// exceptions are replaced, so an EXDATE dropped from a feed un-cancels
+    /// that occurrence. Exceptions whose series is missing or doesn't repeat
+    /// are skipped. Returns (events written, exceptions written).
     pub fn import(
         &mut self,
         events: Vec<Event>,
@@ -307,6 +309,7 @@ impl Db {
         self.write(|tx| {
             let n_events = events.len();
             for ev in events {
+                tx.execute("DELETE FROM event_exceptions WHERE event_id = ?1", [&ev.id])?;
                 write_event(tx, ev, true)?;
             }
             let mut n_exc = 0;
