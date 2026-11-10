@@ -46,6 +46,7 @@ vcal rm <id> --occurrence <ts>
 vcal import calendar.ics                            # or - for stdin
 vcal export backup.ics                              # or to stdout; -c work, --id <id> to filter
 
+vcal show <id>                                      # one event in full: recurrence, exceptions, next dates
 vcal next                                           # "14:00 Dentist", for a status bar
 vcal notify                                         # send reminders that are due
 

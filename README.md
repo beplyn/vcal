@@ -36,7 +36,7 @@ man page and shell completions for cargo installs.
 |---|---|
 | [Installing](docs/install.md) | Nix (flake input, overlay, profile) and cargo |
 | [The TUI](docs/tui.md) | Views, modes, key bindings, `:` commands, the event dialog |
-| [The CLI](docs/cli.md) | `query`, `next`, `add`, `edit`, `rm`, `notify`, `import`, `export`, `config`; JSON output |
+| [The CLI](docs/cli.md) | `query`, `show`, `next`, `add`, `edit`, `rm`, `notify`, `import`, `export`, `config`; JSON output |
 | [Configuration](docs/configuration.md) | File locations, `config.toml`, themes, key bindings |
 | [Home-Manager](docs/home-manager.md) | `programs.vcal`, Stylix colours |
 | [Desktop integration](docs/desktop.md) | Watching the database from widgets and scripts |

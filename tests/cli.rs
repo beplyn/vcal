@@ -780,3 +780,70 @@ fn query_filters() {
     assert_eq!(titles(&["-c", "health", "-s", "gym"]), ["Gym"]);
     assert!(titles(&["-s", "nothing"]).is_empty());
 }
+
+#[test]
+fn show_one_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    // starts in the past, so the upcoming list depends only on today's date
+    let id = ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Standup",
+            "-s",
+            "2026-01-05 09:30",
+            "-D",
+            "15m",
+            "-r",
+            "FREQ=WEEKLY;BYDAY=MO",
+            "-c",
+            "work",
+            "-R",
+            "5m",
+            "-n",
+            "bring coffee",
+        ],
+    );
+    let id = id.trim();
+    let first = json(&db, "2026-01-12", "2026-01-12")[0]["occurrence"].to_string();
+    ok(&db, &["rm", id, "--occurrence", &first]);
+    let second = json(&db, "2026-01-19", "2026-01-19")[0]["occurrence"].to_string();
+    ok(
+        &db,
+        &[
+            "edit",
+            id,
+            "--occurrence",
+            &second,
+            "--start",
+            "2026-01-19 11:00",
+            "--title",
+            "Late",
+        ],
+    );
+
+    let text = ok(&db, &["show", id, "--upcoming", "2"]);
+    for needle in [
+        "title     Standup",
+        &format!("id        {id}"),
+        "when      Mon 2026-01-05 09:30–09:45",
+        "repeats   FREQ=WEEKLY;BYDAY=MO  (no end)",
+        "reminder  5m before",
+        &format!("cancelled Mon 2026-01-12 09:30  [{first}]"),
+        "changed   Mon 2026-01-19 09:30 → Mon 2026-01-19 11:00–11:15, \"Late\"",
+        "upcoming  Mon ",
+        "notes\n  bring coffee",
+    ] {
+        assert!(text.contains(needle), "{needle:?} not in\n{text}");
+    }
+    assert_eq!(text.matches(" 09:30–09:45  [").count(), 2, "{text}");
+
+    let v: Value = serde_json::from_str(&ok(&db, &["show", id, "--json"])).unwrap();
+    assert_eq!(v["rrule"], "FREQ=WEEKLY;BYDAY=MO");
+    assert_eq!(v["exceptions"].as_array().unwrap().len(), 2);
+    assert_eq!(v["exceptions"][0]["kind"], "cancelled");
+    assert_eq!(v["upcoming"].as_array().unwrap().len(), 5);
+    assert!(err(&db, &["show", "nope"]).contains("no event with id nope"));
+}

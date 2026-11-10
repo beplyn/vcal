@@ -60,6 +60,18 @@ enum Command {
     Edit(EditArgs),
     /// Delete an event, or one occurrence of a recurring event
     Rm(RmArgs),
+    /// Print one event in full: times, recurrence, changed and cancelled
+    /// occurrences, and the next few occurrences
+    Show {
+        /// Event id, as printed by `add` or `query`
+        id: String,
+        /// Print a JSON object instead
+        #[arg(long)]
+        json: bool,
+        /// How many upcoming occurrences to list
+        #[arg(long, value_name = "N", default_value_t = 5)]
+        upcoming: usize,
+    },
     /// Print the next event, for status bars
     Next(NextArgs),
     /// Send desktop notifications (notify-send) for reminders that are due;
@@ -299,6 +311,9 @@ fn run_with(cli: Cli) -> Result<()> {
         Some(Command::Add(args)) => add(&mut Db::open(&db_path)?, args, tz, &cfg),
         Some(Command::Edit(args)) => edit(&mut Db::open(&db_path)?, args, tz, &cfg),
         Some(Command::Rm(args)) => rm(&mut Db::open(&db_path)?, args),
+        Some(Command::Show { id, json, upcoming }) => {
+            show(&Db::open(&db_path)?, &id, json, upcoming, tz, &cfg.settings)
+        }
         Some(Command::Next(args)) => next(&Db::open(&db_path)?, args, tz, &cfg.settings),
         Some(Command::Notify { dry_run }) => {
             notify(&mut Db::open(&db_path)?, dry_run, tz, &cfg.settings)
@@ -764,6 +779,221 @@ fn rm(db: &mut Db, args: RmArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+#[derive(Serialize)]
+struct JsonException {
+    occurrence: i64,
+    kind: &'static str,
+    title: Option<String>,
+    description: Option<String>,
+    category: Option<String>,
+    location: Option<String>,
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct JsonEvent<'a> {
+    id: &'a str,
+    title: &'a str,
+    description: &'a str,
+    category: Option<&'a str>,
+    location: Option<&'a str>,
+    all_day: bool,
+    start: String,
+    end: String,
+    start_ts: i64,
+    end_ts: i64,
+    tzid: Option<&'a str>,
+    rrule: Option<&'a str>,
+    status: Status,
+    reminder: Option<i64>,
+    created_ts: i64,
+    updated_ts: i64,
+    exceptions: Vec<JsonException>,
+    upcoming: Vec<JsonOccurrence<'a>>,
+}
+
+/// An event's own span as a pseudo-occurrence, to share `bounds`.
+fn as_occurrence(ev: &Event) -> Occurrence {
+    Occurrence {
+        event_id: ev.id.clone(),
+        original_start: None,
+        title: ev.title.clone(),
+        description: ev.description.clone(),
+        category: ev.category.clone(),
+        location: ev.location.clone(),
+        start: ev.start,
+        end: ev.end,
+        all_day: ev.all_day,
+        status: ev.status,
+        reminder: ev.reminder,
+        modified: false,
+    }
+}
+
+fn show(db: &Db, id: &str, json: bool, upcoming: usize, tz: Tz, settings: &Settings) -> Result<()> {
+    let ev = db
+        .get(id)?
+        .with_context(|| format!("no event with id {id}"))?;
+    let exceptions = db.exceptions(id)?;
+    let now = time::now();
+    // the next occurrences, looking up to a year ahead (all of them for a single event)
+    let next: Vec<Occurrence> = if ev.is_recurring() {
+        db.occurrences(now, now + 366 * DAY, tz, false)?
+            .into_iter()
+            .filter(|o| o.event_id == ev.id && bounds(o, tz).3 > now)
+            .take(upcoming)
+            .collect()
+    } else {
+        vec![]
+    };
+    let (start, end, start_ts, end_ts) = bounds(&as_occurrence(&ev), tz);
+
+    if json {
+        let row = JsonEvent {
+            id: &ev.id,
+            title: &ev.title,
+            description: &ev.description,
+            category: ev.category.as_deref(),
+            location: ev.location.as_deref(),
+            all_day: ev.all_day,
+            start,
+            end,
+            start_ts,
+            end_ts,
+            tzid: ev.tzid.as_deref(),
+            rrule: ev.rrule.as_deref(),
+            status: ev.status,
+            reminder: ev.reminder,
+            created_ts: ev.created,
+            updated_ts: ev.updated,
+            exceptions: exceptions
+                .iter()
+                .map(|x| JsonException {
+                    occurrence: x.original_start,
+                    kind: x.kind.as_str(),
+                    title: x.title.clone(),
+                    description: x.description.clone(),
+                    category: x.category.clone(),
+                    location: x.location.clone(),
+                    start_ts: x.start,
+                    end_ts: x.end,
+                })
+                .collect(),
+            upcoming: next.iter().map(|o| JsonOccurrence::new(o, tz)).collect(),
+        };
+        return emit(&(serde_json::to_string_pretty(&row)? + "\n"));
+    }
+
+    let stamp = |ts: i64| {
+        let dt = time::in_tz(ts, tz);
+        format!("{} {}", dt.format("%a %Y-%m-%d"), settings.time(dt))
+    };
+    // the span of something starting at `s` and ending at `e`, as people read it
+    let span = |s: i64, e: i64| {
+        if ev.all_day {
+            let (a, b) = (
+                time::floating_date(s),
+                time::floating_date(e) - chrono::Duration::days(1),
+            );
+            if a == b {
+                format!("{}, all day", a.format("%a %Y-%m-%d"))
+            } else {
+                format!(
+                    "{} – {}, all day",
+                    a.format("%a %Y-%m-%d"),
+                    b.format("%a %Y-%m-%d")
+                )
+            }
+        } else if time::local_date(s, tz) == time::local_date(e, tz) {
+            format!("{}–{}", stamp(s), settings.time(time::in_tz(e, tz)))
+        } else {
+            format!("{} – {}", stamp(s), stamp(e))
+        }
+    };
+    let mut out = String::new();
+    let mut field = |name: &str, value: &str| {
+        let _ = writeln!(out, "{name:<10}{}", one_line(value));
+    };
+    field("title", &ev.title);
+    field("id", &ev.id);
+    let mut when = span(ev.start, ev.end);
+    if let Some(z) = ev.tzid.as_deref().filter(|z| *z != tz.name()) {
+        let _ = write!(when, "  (series in {z})");
+    }
+    field("when", &when);
+    if let Some(rule) = &ev.rrule {
+        let ends = match recurrence::series_end(&ev)? {
+            Some(last) => format!("last ends {}", stamp(last)),
+            None => "no end".into(),
+        };
+        field("repeats", &format!("{rule}  ({ends})"));
+    }
+    if let Some(c) = &ev.category {
+        field("category", c);
+    }
+    if let Some(l) = &ev.location {
+        field("location", l);
+    }
+    field("status", ev.status.as_str());
+    if let Some(m) = ev.reminder {
+        field("reminder", &format!("{} before", time::format_minutes(m)));
+    }
+    field("created", &stamp(ev.created));
+    field("updated", &stamp(ev.updated));
+    for x in &exceptions {
+        let at = if ev.all_day {
+            time::floating_date(x.original_start)
+                .format("%a %Y-%m-%d")
+                .to_string()
+        } else {
+            stamp(x.original_start)
+        };
+        match x.kind {
+            ExceptionKind::Cancelled => {
+                field("cancelled", &format!("{at}  [{}]", x.original_start))
+            }
+            ExceptionKind::Modified => {
+                let mut what = vec![];
+                if let (Some(s), Some(e)) = (x.start, x.end) {
+                    what.push(format!("→ {}", span(s, e)));
+                }
+                if let Some(t) = &x.title {
+                    what.push(format!("\"{t}\""));
+                }
+                for (name, v) in [("category", &x.category), ("location", &x.location)] {
+                    if let Some(v) = v {
+                        what.push(format!("{name} {v}"));
+                    }
+                }
+                if x.description.is_some() {
+                    what.push("own notes".into());
+                }
+                field(
+                    "changed",
+                    &format!("{at} {}  [{}]", what.join(", "), x.original_start),
+                );
+            }
+        }
+    }
+    for (i, o) in next.iter().enumerate() {
+        let label = if i == 0 { "upcoming" } else { "" };
+        let mut line = span(o.start, o.end);
+        if o.modified {
+            line.push_str("  (changed)");
+        }
+        let _ = write!(line, "  [{}]", o.original_start.unwrap_or(o.start));
+        field(label, &line);
+    }
+    if !ev.description.is_empty() {
+        out.push_str("notes\n");
+        for l in ev.description.lines() {
+            let _ = writeln!(out, "  {l}");
+        }
+    }
+    emit(&out)
 }
 
 /// The occurrence's real start instant (local midnight for all-day events).
