@@ -35,6 +35,7 @@ currently in effect.
 | `dd` | Delete (asks to confirm; for a repeating event, asks: this occurrence or all) |
 | `cc` | Edit (same choice for repeating events) |
 | `yy` / `p` | Copy the event / paste a copy at the cursor |
+| `u` / `C-r` | Undo / redo the last change made in this window (up to 100; counts work: `3u`). Undo refuses if the events changed elsewhere since |
 | `/`, `n` `N` | Search; next / previous match (up to a year away) |
 | `:` | Command line |
 | `?` | All key bindings |

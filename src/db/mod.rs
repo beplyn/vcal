@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub use migrations::latest as schema_version;
+pub use repo::Snapshot;
 
 pub struct Db {
     conn: Connection,

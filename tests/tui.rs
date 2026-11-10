@@ -822,3 +822,75 @@ fn agenda_view() {
     press(&mut a, "<Tab>");
     assert_eq!(a.view, View::Month, "Tab wraps around after the agenda");
 }
+
+#[test]
+fn undo_and_redo() {
+    let mut a = app();
+    let mon = date(2026, 11, 9);
+    let ev = add(&mut a, "Dentist", at(mon, 14, 0), 60);
+    press(&mut a, "u");
+    assert_eq!(
+        a.message.as_ref().unwrap().text,
+        "nothing to undo",
+        "setup isn't recorded"
+    );
+
+    // an edit, undone and redone
+    press(&mut a, "cc<C-u>Orthodontist<CR>");
+    press(&mut a, "u");
+    assert_eq!(a.db.get(&ev.id).unwrap().unwrap().title, "Dentist");
+    assert_eq!(
+        a.message.as_ref().unwrap().text,
+        "undid: saved \"Orthodontist\""
+    );
+    press(&mut a, "<C-r>");
+    assert_eq!(a.db.get(&ev.id).unwrap().unwrap().title, "Orthodontist");
+
+    // a delete comes back with the same id
+    press(&mut a, "ddy");
+    assert!(a.db.get(&ev.id).unwrap().is_none());
+    press(&mut a, "u");
+    assert_eq!(a.db.get(&ev.id).unwrap().unwrap().title, "Orthodontist");
+
+    // creating, then 2u: the lunch, then the rename (the new change dropped the redo)
+    press(&mut a, ":add Lunch 12:00<CR>");
+    assert_eq!(titles_on(&a, mon), ["Lunch", "Orthodontist"]);
+    press(&mut a, "2u");
+    assert_eq!(titles_on(&a, mon), ["Dentist"]);
+    press(&mut a, "2<C-r>");
+    assert_eq!(titles_on(&a, mon), ["Lunch", "Orthodontist"]);
+    // a new change drops what could be redone
+    press(&mut a, "u");
+    press(&mut a, ":add Tea 16:00<CR>");
+    press(&mut a, "<C-r>");
+    assert_eq!(a.message.as_ref().unwrap().text, "nothing to redo");
+
+    // occurrence changes of a series come back too
+    let mut gym = Event::new("Gym", at(mon, 18, 0), at(mon, 19, 0));
+    gym.rrule = Some("FREQ=DAILY".into());
+    a.db.insert(gym.clone()).unwrap();
+    a.reload();
+    press(&mut a, "l");
+    a.slot = a.slot_of(at(date(2026, 11, 10), 18, 0));
+    press(&mut a, "g2");
+    a.slot = a.slot_of(at(date(2026, 11, 10), 18, 0));
+    press(&mut a, "ddoy");
+    assert!(!titles_on(&a, date(2026, 11, 10)).contains(&"Gym".to_string()));
+    press(&mut a, "u");
+    assert!(titles_on(&a, date(2026, 11, 10)).contains(&"Gym".to_string()));
+    assert!(a.db.exceptions(&gym.id).unwrap().is_empty());
+
+    // a change made elsewhere since blocks the undo instead of being lost
+    press(&mut a, "<C-r>");
+    let mut changed = a.db.get(&gym.id).unwrap().unwrap();
+    changed.title = "Swim".into();
+    a.db.update(changed).unwrap();
+    press(&mut a, "u");
+    let msg = a.message.clone().unwrap();
+    assert!(
+        msg.error && msg.text.contains("changed since"),
+        "{}",
+        msg.text
+    );
+    assert_eq!(a.db.get(&gym.id).unwrap().unwrap().title, "Swim");
+}

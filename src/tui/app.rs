@@ -13,7 +13,7 @@ use super::form::{Form, Submit, TextInput};
 use super::keymap::{self, Action, Key, KeyMode, Keymap, Resolved};
 use super::theme::Theme;
 use crate::config::{self, Config};
-use crate::db::{self, Db};
+use crate::db::{self, Db, Snapshot};
 use crate::model::{Event, Exception, Occurrence, Status};
 use crate::settings::{Settings, View};
 use crate::time::{self, DAY};
@@ -76,6 +76,21 @@ pub enum Prompt {
     Scope { occ: Occurrence, then: ScopeAction },
 }
 
+/// How many changes `u` can go back.
+const UNDO_DEPTH: usize = 100;
+
+/// Events as snapshotted, by id; `None` for one that didn't exist.
+type States = Vec<(String, Option<Snapshot>)>;
+
+/// One undoable change: reverting it means checking the events are still
+/// as `after` left them, then putting `before` back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub label: String,
+    before: States,
+    after: States,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub text: String,
@@ -109,6 +124,9 @@ pub struct App {
     pub prompt: Option<Prompt>,
     pub filter: Option<String>,
     pub yanked: Vec<Occurrence>,
+    /// Changes `u` can revert, newest last, and ones `<C-r>` can redo.
+    pub undo: Vec<Change>,
+    pub redo: Vec<Change>,
     pub message: Option<Message>,
     pub quit: bool,
     cache: Vec<Occurrence>,
@@ -161,6 +179,8 @@ impl App {
             prompt: None,
             filter: None,
             yanked: Vec::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
             message: None,
             quit: false,
             cache: Vec::new(),
@@ -587,6 +607,119 @@ impl App {
         }
     }
 
+    fn states(&self, ids: &[String]) -> Result<States> {
+        ids.iter()
+            .map(|id| Ok((id.clone(), self.db.snapshot(id)?)))
+            .collect()
+    }
+
+    /// [`App::write`], recorded for undo: `ids` are the events `f` may
+    /// create, change or delete.
+    fn record(&mut self, mut ids: Vec<String>, f: impl FnOnce(&mut Db) -> Result<String>) -> bool {
+        ids.sort();
+        ids.dedup();
+        let before = match self.states(&ids) {
+            Ok(s) => s,
+            Err(e) => {
+                self.error(format!("{e:#}"));
+                return false;
+            }
+        };
+        let ok = self.write(f);
+        if ok {
+            let label = self
+                .message
+                .as_ref()
+                .map(|m| m.text.clone())
+                .unwrap_or_default();
+            self.push_change(label, before, &ids);
+        }
+        ok
+    }
+
+    /// Records a change already made: the events in `ids` went from `before`
+    /// to how they are now.
+    fn push_change(&mut self, label: String, before: States, ids: &[String]) {
+        match self.states(ids) {
+            Ok(after) if after != before => {
+                self.undo.push(Change {
+                    label,
+                    before,
+                    after,
+                });
+                if self.undo.len() > UNDO_DEPTH {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
+            }
+            Ok(_) => {}
+            Err(e) => self.error(format!("{e:#}")),
+        }
+    }
+
+    /// Reverts a change if its events are still as it left them, and
+    /// returns the change that reverts this one.
+    fn revert(&mut self, c: Change, verb: &str) -> Option<Change> {
+        let ids: Vec<String> = c.after.iter().map(|(id, _)| id.clone()).collect();
+        match self.states(&ids) {
+            Ok(now) if now == c.after => {}
+            Ok(_) => {
+                self.error(format!(
+                    "can't {verb} \"{}\": changed since (another window or a sync)",
+                    c.label
+                ));
+                return None;
+            }
+            Err(e) => {
+                self.error(format!("{e:#}"));
+                return None;
+            }
+        }
+        let label = c.label.clone();
+        if !self.write(|db| db.restore(&c.before).map(|()| format!("{verb}: {label}"))) {
+            return None;
+        }
+        // follow the change: the first event that exists afterwards
+        if let Some(ev) = c
+            .before
+            .iter()
+            .find_map(|(_, s)| s.as_ref().map(|s| &s.event))
+        {
+            self.cursor = if ev.all_day {
+                time::floating_date(ev.start)
+            } else {
+                time::local_date(ev.start, self.tz)
+            };
+            if !ev.all_day {
+                self.slot = self.clamp_slot(self.slot_of(ev.start));
+            }
+        }
+        let now = self.states(&ids).ok()?;
+        Some(Change {
+            label: c.label,
+            before: c.after,
+            after: now,
+        })
+    }
+
+    fn undo(&mut self) {
+        let Some(c) = self.undo.pop() else {
+            return self.info("nothing to undo");
+        };
+        if let Some(inverse) = self.revert(c, "undid") {
+            self.redo.push(inverse);
+        }
+    }
+
+    fn redo(&mut self) {
+        let Some(c) = self.redo.pop() else {
+            return self.info("nothing to redo");
+        };
+        if let Some(inverse) = self.revert(c, "redid") {
+            self.undo.push(inverse);
+        }
+    }
+
     // --- update ----------------------------------------------------------
 
     /// Periodic housekeeping: clock, and reloading after writes from
@@ -685,7 +818,12 @@ impl App {
             Action::ShiftLater | Action::ShiftEarlier => {
                 self.shift(action == Action::ShiftLater, n)
             }
-            Action::Down | Action::Up | Action::SearchNext | Action::SearchPrev => {
+            Action::Down
+            | Action::Up
+            | Action::SearchNext
+            | Action::SearchPrev
+            | Action::Undo
+            | Action::Redo => {
                 for _ in 0..count {
                     self.perform(action);
                     if self.message.as_ref().is_some_and(|m| m.error) {
@@ -880,6 +1018,8 @@ impl App {
                 None => self.info("no event here"),
             },
             Action::Paste => self.paste(),
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
             Action::ShiftLater | Action::ShiftEarlier => {
                 self.shift(action == Action::ShiftLater, 1)
             }
@@ -999,6 +1139,11 @@ impl App {
             Submit::Insert(e) | Submit::Update(e) => (e.start, e.all_day),
             Submit::Exception(x) => (x.start.unwrap_or(x.original_start), form.all_day),
         };
+        let id = match &submit {
+            Submit::Insert(e) | Submit::Update(e) => e.id.clone(),
+            Submit::Exception(x) => x.event_id.clone(),
+        };
+        let before = self.states(std::slice::from_ref(&id)).ok();
         let result = match submit {
             Submit::Insert(ev) => self
                 .db
@@ -1016,6 +1161,9 @@ impl App {
             Ok(msg) => {
                 self.form = None;
                 self.mode = Mode::Normal;
+                if let Some(before) = before {
+                    self.push_change(msg.clone(), before, &[id]);
+                }
                 self.info(msg);
                 self.cursor = if all_day {
                     time::floating_date(start)
@@ -1070,7 +1218,8 @@ impl App {
 
     fn delete(&mut self, prompt: Prompt) {
         let Prompt::Delete(list) = prompt else { return };
-        self.write(|db| {
+        let ids = list.iter().map(|o| o.event_id.clone()).collect();
+        self.record(ids, |db| {
             let mut seen = std::collections::HashSet::new();
             for o in &list {
                 match o.original_start {
@@ -1127,7 +1276,8 @@ impl App {
                 ev
             })
             .collect();
-        self.write(|db| {
+        let ids = copies.iter().map(|e| e.id.clone()).collect();
+        self.record(ids, |db| {
             let n = copies.len();
             for ev in copies {
                 db.insert(ev)?;
@@ -1160,7 +1310,8 @@ impl App {
             } else {
                 i64::from(self.settings.slot_minutes) * 60
             };
-        let moved = self.write(|db| {
+        let ids = list.iter().map(|o| o.event_id.clone()).collect();
+        let moved = self.record(ids, |db| {
             for o in &list {
                 match o.original_start {
                     Some(at) => {
@@ -1362,7 +1513,10 @@ impl App {
         };
         let (start, all_day) = (ev.start, ev.all_day);
         let summary = crate::quick::describe(&ev, self.tz, self.settings.clock_24h);
-        if self.write(|db| db.insert(ev).map(|_| format!("created {summary}"))) {
+        let id = ev.id.clone();
+        if self.record(vec![id], |db| {
+            db.insert(ev).map(|_| format!("created {summary}"))
+        }) {
             self.cursor = if all_day {
                 time::floating_date(start)
             } else {
@@ -1392,16 +1546,20 @@ impl App {
 
     fn import(&mut self, arg: &str) {
         let path = expand_home(arg);
-        let tz = self.tz;
-        self.write(|db| {
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("can't read {}", path.display()))?;
-            let parsed = crate::ics::parse(&text, tz)?;
-            let skipped = parsed.warnings.len();
+        let parsed = std::fs::read_to_string(&path)
+            .with_context(|| format!("can't read {}", path.display()))
+            .and_then(|text| crate::ics::parse(&text, self.tz));
+        let parsed = match parsed {
+            Ok(p) => p,
+            Err(e) => return self.error(format!("{e:#}")),
+        };
+        let ids = parsed.events.iter().map(|e| e.id.clone()).collect();
+        let warnings = parsed.warnings.len();
+        self.record(ids, |db| {
             let (e, x) = db.import(parsed.events, parsed.exceptions)?;
             let mut msg = format!("imported {e} events, {x} exceptions");
-            if skipped > 0 {
-                msg.push_str(&format!(" ({skipped} skipped)"));
+            if warnings > 0 {
+                msg.push_str(&format!(" ({warnings} warnings; vcal import shows them)"));
             }
             Ok(msg)
         });

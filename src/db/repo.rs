@@ -15,6 +15,13 @@ const EVENT_COLS: &str = "id, title, description, category, location, start_ts, 
 const EXCEPTION_COLS: &str =
     "event_id, original_start_ts, kind, title, description, category, location, start_ts, end_ts";
 
+/// An event with its exceptions, as [`Db::snapshot`] saves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub event: Event,
+    pub exceptions: Vec<Exception>,
+}
+
 fn event_from_row(r: &Row) -> rusqlite::Result<Event> {
     let status: String = r.get(10)?;
     Ok(Event {
@@ -271,6 +278,35 @@ impl Db {
 
     pub fn get(&self, id: &str) -> Result<Option<Event>> {
         get_event(&self.conn, id)
+    }
+
+    /// An event and its exceptions as they are now, `None` if it doesn't
+    /// exist: what undo saves before a change.
+    pub fn snapshot(&self, id: &str) -> Result<Option<Snapshot>> {
+        Ok(match self.get(id)? {
+            Some(event) => Some(Snapshot {
+                exceptions: self.exceptions(id)?,
+                event,
+            }),
+            None => None,
+        })
+    }
+
+    /// Puts events back as snapshotted, in one transaction: `None` deletes
+    /// the event, `Some` replaces it and all its exceptions.
+    pub fn restore(&mut self, states: &[(String, Option<Snapshot>)]) -> Result<()> {
+        self.write(|tx| {
+            for (id, state) in states {
+                tx.execute("DELETE FROM events WHERE id = ?1", [id])?;
+                if let Some(s) = state {
+                    write_event(tx, s.event.clone(), false)?;
+                    for x in &s.exceptions {
+                        write_exception(tx, x.clone())?;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Every stored event, oldest start first.
