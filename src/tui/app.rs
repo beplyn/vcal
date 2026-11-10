@@ -117,6 +117,17 @@ pub struct App {
     database_path: Option<PathBuf>,
 }
 
+/// A path typed on the command line, with a leading `~/` expanded.
+fn expand_home(arg: &str) -> PathBuf {
+    match arg.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(rest),
+        None => PathBuf::from(arg),
+    }
+}
+
 fn matches(o: &Occurrence, needle: &str) -> bool {
     let needle = needle.to_lowercase();
     [
@@ -1200,7 +1211,8 @@ impl App {
         match cmd {
             "" => {}
             "q" | "q!" | "quit" | "qa" | "qa!" | "wq" | "wq!" | "x" | "xa" => self.quit = true,
-            "w" | "write" => self.info("everything is saved as you go"),
+            "w" | "write" | "export" if !arg.is_empty() => self.export(arg),
+            "w" | "write" => self.info("everything is saved as you go; :w <file.ics> exports"),
             "j" | "jump" | "goto" | "e" if !arg.is_empty() => self.jump(arg),
             "today" => self.goto_today(),
             "view" => match View::parse(arg) {
@@ -1236,14 +1248,23 @@ impl App {
         }
     }
 
+    fn export(&mut self, arg: &str) {
+        let path = expand_home(arg);
+        let result = self.db.events().and_then(|events| {
+            let n = events.len();
+            let text = crate::ics::write::calendar(&self.db.with_exceptions(events)?, self.now);
+            std::fs::write(&path, text)
+                .with_context(|| format!("can't write {}", path.display()))?;
+            Ok(n)
+        });
+        match result {
+            Ok(n) => self.info(format!("exported {n} events to {}", path.display())),
+            Err(e) => self.error(format!("{e:#}")),
+        }
+    }
+
     fn import(&mut self, arg: &str) {
-        let path = match arg.strip_prefix("~/") {
-            Some(rest) => std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(rest),
-            None => PathBuf::from(arg),
-        };
+        let path = expand_home(arg);
         let tz = self.tz;
         self.write(|db| {
             let text = std::fs::read_to_string(&path)

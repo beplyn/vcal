@@ -5,6 +5,7 @@
 //! Windows or Outlook names, or described by a VTIMEZONE (see [`zones`]);
 //! one that can't be placed is read in the local zone, with a warning.
 
+pub mod write;
 mod zones;
 
 use std::collections::HashMap;

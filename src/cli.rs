@@ -74,6 +74,8 @@ enum Command {
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
+    /// Write events as an iCalendar (.ics) file, to stdout or FILE
+    Export(ExportArgs),
     /// Inspect the configuration
     Config {
         #[command(subcommand)]
@@ -224,6 +226,23 @@ struct NextArgs {
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "With no filters, every event is written. Filters combine: an event must \
+match all of the given kinds, and any one value of each."
+)]
+struct ExportArgs {
+    /// Write here instead of stdout
+    #[arg(value_name = "FILE")]
+    path: Option<PathBuf>,
+    /// Only events in this category (repeatable)
+    #[arg(long, short, value_name = "NAME")]
+    category: Vec<String>,
+    /// Only this event (repeatable)
+    #[arg(long, value_name = "ID")]
+    id: Vec<String>,
+}
+
+#[derive(Args)]
 struct RmArgs {
     /// Event id, as printed by `add` or `query`
     id: String,
@@ -278,6 +297,7 @@ fn run_with(cli: Cli) -> Result<()> {
             notify(&mut Db::open(&db_path)?, dry_run, tz, &cfg.settings)
         }
         Some(Command::Import { path }) => import(&mut Db::open(&db_path)?, &path, tz),
+        Some(Command::Export(args)) => export(&Db::open(&db_path)?, args),
         Some(Command::GenAssets { .. } | Command::Config { .. }) => unreachable!(),
     }
 }
@@ -922,6 +942,33 @@ fn import(db: &mut Db, path: &Path, tz: Tz) -> Result<()> {
     let (events, exceptions) = db.import(parsed.events, parsed.exceptions)?;
     eprintln!("imported {events} events, {exceptions} exceptions");
     Ok(())
+}
+
+fn export(db: &Db, args: ExportArgs) -> Result<()> {
+    let events: Vec<Event> = db
+        .events()?
+        .into_iter()
+        .filter(|e| args.id.is_empty() || args.id.contains(&e.id))
+        .filter(|e| {
+            args.category.is_empty()
+                || e.category
+                    .as_deref()
+                    .is_some_and(|c| args.category.iter().any(|w| w.eq_ignore_ascii_case(c)))
+        })
+        .collect();
+    for id in &args.id {
+        ensure!(db.get(id)?.is_some(), "no event with id {id}");
+    }
+    let n = events.len();
+    let text = ics::write::calendar(&db.with_exceptions(events)?, time::now());
+    match &args.path {
+        Some(p) if p != Path::new("-") => {
+            std::fs::write(p, text).with_context(|| format!("can't write {}", p.display()))?;
+            eprintln!("exported {n} events to {}", p.display());
+            Ok(())
+        }
+        _ => emit(&text),
+    }
 }
 
 fn gen_assets(dir: &Path) -> Result<()> {

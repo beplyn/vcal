@@ -643,3 +643,84 @@ fn reminders_notify_once() {
             .success()
     );
 }
+
+#[test]
+fn export_round_trips_through_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let standup = ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Standup",
+            "-s",
+            "2026-11-09 09:30",
+            "-D",
+            "15m",
+            "-c",
+            "work",
+            "-r",
+            "FREQ=DAILY;COUNT=5",
+            "-R",
+            "5m",
+        ],
+    );
+    let standup = standup.trim();
+    ok(
+        &db,
+        &[
+            "add",
+            "-t",
+            "Trip",
+            "-s",
+            "2026-11-20",
+            "-e",
+            "2026-11-22",
+            "--all-day",
+        ],
+    );
+    ok(
+        &db,
+        &[
+            "rm",
+            standup,
+            "--occurrence",
+            &json(&db, "2026-11-10", "2026-11-10")[0]["occurrence"].to_string(),
+        ],
+    );
+    let moved = json(&db, "2026-11-11", "2026-11-11")[0]["occurrence"].to_string();
+    ok(
+        &db,
+        &[
+            "edit",
+            standup,
+            "--occurrence",
+            &moved,
+            "--start",
+            "2026-11-11 11:00",
+            "--title",
+            "Late",
+        ],
+    );
+
+    let file = dir.path().join("out.ics");
+    ok(&db, &["export", file.to_str().unwrap()]);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("BEGIN:VCALENDAR\r\n"));
+    // the series and its moved occurrence, not the trip
+    assert_eq!(
+        ok(&db, &["export", "-c", "WORK"])
+            .matches("BEGIN:VEVENT")
+            .count(),
+        2
+    );
+
+    let other = dir.path().join("other.db");
+    ok(&other, &["import", file.to_str().unwrap()]);
+    assert_eq!(
+        json(&other, "2026-11-01", "2026-12-01"),
+        json(&db, "2026-11-01", "2026-12-01")
+    );
+    assert!(err(&db, &["export", "--id", "nope"]).contains("no event with id nope"));
+}

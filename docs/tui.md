@@ -60,6 +60,7 @@ view), and `o` creates an event spanning the selection.
 | `:today` | Go to today |
 | `:view month\|week\|day` | Switch view |
 | `:import <file.ics>` | Import an iCalendar file |
+| `:export <file.ics>`, `:w <file.ics>` | Write every event to an iCalendar file |
 | `:noh` | Clear the search filter |
 | `:reload` | Re-read events and config |
 

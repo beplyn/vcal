@@ -273,6 +273,26 @@ impl Db {
         get_event(&self.conn, id)
     }
 
+    /// Every stored event, oldest start first.
+    pub fn events(&self) -> Result<Vec<Event>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {EVENT_COLS} FROM events ORDER BY start_ts, id"
+        ))?;
+        let rows = stmt.query_map([], event_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Events with their exceptions, as `ics::write::calendar` takes them.
+    pub fn with_exceptions(&self, events: Vec<Event>) -> Result<Vec<(Event, Vec<Exception>)>> {
+        events
+            .into_iter()
+            .map(|e| {
+                let x = self.exceptions(&e.id)?;
+                Ok((e, x))
+            })
+            .collect()
+    }
+
     /// Deletes an event and, by cascade, its exceptions. False if it didn't exist.
     pub fn delete(&mut self, id: &str) -> Result<bool> {
         self.write(|tx| Ok(tx.execute("DELETE FROM events WHERE id = ?1", [id])? > 0))

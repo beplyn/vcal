@@ -43,6 +43,7 @@ vcal rm <id>
 vcal rm <id> --occurrence <ts>
 
 vcal import calendar.ics                            # or - for stdin
+vcal export backup.ics                              # or to stdout; -c work, --id <id> to filter
 
 vcal next                                           # "14:00 Dentist", for a status bar
 vcal notify                                         # send reminders that are due
@@ -77,7 +78,7 @@ For example, the next event's title for a status bar:
 vcal query --from now --to +1d --format json | jq -r '.[0].title // empty'
 ```
 
-## Importing
+## Importing and exporting
 
 `vcal import` keeps each event's UID as its id, so importing a newer copy of
 the same file updates events in place. The file wins for the events it
@@ -90,6 +91,16 @@ and Exchange (`W. Europe Standard Time`), Outlook display names
 `VTIMEZONE`. When vcal has to guess a zone from a `VTIMEZONE`'s offsets, or
 can't place it at all and falls back to local time, it prints a warning that
 names the zone.
+
+`vcal export [FILE]` writes events as iCalendar, to stdout or to FILE
+(`:export` or `:w <file>` in the TUI). With no filter it writes every event;
+`-c/--category` and `--id` narrow it down, and both can be repeated. Repeating
+events keep their RRULE, cancelled occurrences become EXDATEs, changed ones
+become RECURRENCE-ID overrides, and reminders become VALARMs. Each time zone
+used gets a `VTIMEZONE`, so readers that don't know IANA names still get the
+times right. Its transitions run 15 years past today. Importing the file
+back, into vcal or anything else, gives the same calendar, so it also works
+as a backup format.
 
 ## Status bars: `vcal next`
 
